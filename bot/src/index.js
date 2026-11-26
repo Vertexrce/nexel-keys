@@ -7,7 +7,7 @@ const {
   SlashCommandBuilder, EmbedBuilder, PermissionFlagsBits
 } = require('discord.js');
 
-const { DISCORD_TOKEN, CLIENT_ID, GUILD_ID, ADMIN_ROLE_ID } = process.env;
+const { DISCORD_TOKEN, GUILD_ID, ADMIN_ROLE_ID } = process.env;
 
 const db = new Database(process.env.DB_PATH || path.join(__dirname, '..', '..', 'server', 'data', 'nexel.db'));
 db.pragma('journal_mode = WAL');
@@ -31,6 +31,9 @@ const client = new Client({
   intents: [GatewayIntentBits.Guilds],
   partials: [Partials.Channel]
 });
+
+client.on('error', (e) => console.error('[bot] client error:', e.message));
+process.on('unhandledRejection', (e) => console.error('[bot] unhandled:', e?.message || e));
 
 function isAdmin(member) {
   if (!member) return false;
@@ -58,11 +61,25 @@ const commands = [
     .addStringOption(o => o.setName('key').setDescription('The key').setRequired(true))
 ].map(c => c.toJSON());
 
-client.once('ready', async () => {
-  const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN);
-  await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: commands });
-  console.log(`[bot] ${client.user.tag} online`);
-});
+let registered = false;
+
+async function registerCommands() {
+  if (registered) return;
+  if (!GUILD_ID) { console.error('[bot] GUILD_ID missing, skipping command registration'); return; }
+  registered = true;
+  try {
+    const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN);
+    await rest.put(Routes.applicationGuildCommands(client.user.id, GUILD_ID), { body: commands });
+    console.log(`[bot] registered ${commands.length} commands in ${GUILD_ID}`);
+  } catch (e) {
+    registered = false;
+    console.error('[bot] command registration failed:', e.message);
+  }
+}
+
+client.once('clientReady', registerCommands);
+client.once('ready', registerCommands);
+client.once('ready', () => console.log(`[bot] ${client.user.tag} online`));
 
 client.on('interactionCreate', async (i) => {
   if (!i.isChatInputCommand()) return;
