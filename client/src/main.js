@@ -5,13 +5,18 @@ const http = require('http');
 const crypto = require('crypto');
 const { machineIdSync } = require('node-machine-id');
 
-const API = process.env.NEXEL_API || 'http://localhost:3000';
+let config = { api: 'http://localhost:3000' };
+try {
+  config = require('./config.json');
+} catch {
+  console.warn('config.json missing, falling back to localhost');
+}
+const API = config.api.replace(/\/$/, '');
 const OAUTH_PORT = 47823;
 
 let win;
 let oauthServer = null;
 
-/* ---------- token storage ---------- */
 function storePath() {
   return path.join(app.getPath('userData'), 'session.bin');
 }
@@ -38,7 +43,6 @@ function clearToken() {
   try { fs.unlinkSync(storePath()); } catch {}
 }
 
-/* ---------- hwid ---------- */
 let cachedHwid = null;
 function getHwid() {
   if (cachedHwid) return cachedHwid;
@@ -52,7 +56,6 @@ function getHwid() {
   return cachedHwid;
 }
 
-/* ---------- window ---------- */
 function createWindow() {
   win = new BrowserWindow({
     width: 1280,
@@ -75,7 +78,6 @@ function createWindow() {
 app.whenReady().then(createWindow);
 app.on('window-all-closed', () => app.quit());
 
-/* ---------- ipc ---------- */
 ipcMain.handle('app:api', () => API);
 ipcMain.handle('app:hwid', () => getHwid());
 ipcMain.handle('app:open', (_e, url) => shell.openExternal(url));
