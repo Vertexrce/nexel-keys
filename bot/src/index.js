@@ -1,1 +1,133 @@
+require('dotenv').config();
+const path = require('path');
+const crypto = require('crypto');
+const Database = require('better-sqlite3');
+const {
+  Client, GatewayIntentBits, Partials, REST, Routes,
+  SlashCommandBuilder, EmbedBuilder, PermissionFlagsBits
+} = require('discord.js');
 
+const { DISCORD_TOKEN, CLIENT_ID, GUILD_ID, ADMIN_ROLE_ID } = process.env;
+
+const db = new Database(process.env.DB_PATH || path.join(__dirname, '..', '..', 'server', 'data', 'nexel.db'));
+db.pragma('journal_mode = WAL');
+
+const TIERS = {
+  '1d':       { label: '1 Day',    ms: 86_400_000 },
+  '7d':       { label: '1 Week',   ms: 604_800_000 },
+  '30d':      { label: '1 Month',  ms: 2_592_000_000 },
+  'lifetime': { label: 'Lifetime', ms: null }
+};
+
+const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+function generateKey() {
+  const b = crypto.randomBytes(20);
+  let s = '';
+  for (let i = 0; i < 20; i++) s += ALPHABET[b[i] % 32];
+  return 'NEXEL-' + s.match(/.{5}/g).join('-');
+}
+
+const client = new Client({
+  intents: [GatewayIntentBits.Guilds],
+  partials: [Partials.Channel]
+});
+
+function isAdmin(member) {
+  if (!member) return false;
+  if (member.permissions.has(PermissionFlagsBits.Administrator)) return true;
+  return ADMIN_ROLE_ID ? member.roles.cache.has(ADMIN_ROLE_ID) : false;
+}
+
+const commands = [
+  new SlashCommandBuilder()
+    .setName('gen')
+    .setDescription('Generate license keys')
+    .addStringOption(o => o.setName('tier').setDescription('Key duration').setRequired(true)
+      .addChoices(
+        { name: '1 Day', value: '1d' },
+        { name: '1 Week', value: '7d' },
+        { name: '1 Month', value: '30d' },
+        { name: 'Lifetime', value: 'lifetime' }
+      ))
+    .addIntegerOption(o => o.setName('amount').setDescription('How many (1-25)').setMinValue(1).setMaxValue(25))
+    .addUserOption(o => o.setName('user').setDescription('DM the keys to this user')),
+  new SlashCommandBuilder().setName('keys').setDescription('Show the 20 most recent keys'),
+  new SlashCommandBuilder().setName('revoke').setDescription('Revoke a key')
+    .addStringOption(o => o.setName('key').setDescription('The key').setRequired(true)),
+  new SlashCommandBuilder().setName('whois').setDescription('Look up a key owner')
+    .addStringOption(o => o.setName('key').setDescription('The key').setRequired(true))
+].map(c => c.toJSON());
+
+client.once('ready', async () => {
+  const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN);
+  await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: commands });
+  console.log(`[bot] ${client.user.tag} online`);
+});
+
+client.on('interactionCreate', async (i) => {
+  if (!i.isChatInputCommand()) return;
+  await i.deferReply({ ephemeral: true });
+
+  if (!isAdmin(i.member)) return i.editReply('You do not have permission to use this.');
+
+  if (i.commandName === 'gen') {
+    const tier = i.options.getString('tier');
+    const amount = i.options.getInteger('amount') || 1;
+    const target = i.options.getUser('user');
+    const now = Date.now();
+    const insert = db.prepare(`INSERT INTO keys (key, tier, duration_ms, created_by, created_at)
+                               VALUES (?, ?, ?, ?, ?)`);
+    const made = [];
+    for (let n = 0; n < amount; n++) {
+      let key = generateKey();
+      while (db.prepare('SELECT 1 FROM keys WHERE key = ?').get(key)) key = generateKey();
+      insert.run(key, tier, TIERS[tier].ms, i.user.id, now);
+      made.push(key);
+    }
+    const block = '```\n' + made.join('\n') + '\n```';
+
+    if (target) {
+      try {
+        await target.send({ content: `**Nexel Emulator — ${TIERS[tier].label}**\n${block}\nRedeem in the loader after logging in with Discord.` });
+        await i.editReply(`Sent ${amount}x **${TIERS[tier].label}** to ${target}.`);
+      } catch {
+        await i.editReply(`Could not DM ${target}.\n${block}`);
+      }
+    } else {
+      await i.editReply(`Generated ${amount}x **${TIERS[tier].label}**:\n${block}`);
+    }
+  }
+
+  if (i.commandName === 'keys') {
+    const rows = db.prepare('SELECT * FROM keys ORDER BY created_at DESC LIMIT 20').all();
+    if (!rows.length) return i.editReply('No keys yet.');
+    const lines = rows.map(r => {
+      const st = r.revoked ? 'revoked' : r.redeemed_by ? `used <@${r.redeemed_by}>` : 'unused';
+      return `${r.key} — ${TIERS[r.tier]?.label ?? r.tier} — ${st}`;
+    });
+    await i.editReply({ embeds: [new EmbedBuilder().setTitle('Recent keys').setDescription('```\n' + lines.join('\n') + '\n```').setColor(0x2fa8ff)] });
+  }
+
+  if (i.commandName === 'revoke') {
+    const key = i.options.getString('key').trim().toUpperCase();
+    const row = db.prepare('SELECT * FROM keys WHERE key = ?').get(key);
+    if (!row) return i.editReply('Unknown key.');
+    db.prepare('UPDATE keys SET revoked = 1 WHERE key = ?').run(key);
+    if (row.redeemed_by) {
+      db.prepare('UPDATE users SET tier = NULL, expires_at = NULL WHERE discord_id = ?').run(row.redeemed_by);
+    }
+    await i.editReply(`Revoked \`${key}\`.`);
+  }
+
+  if (i.commandName === 'whois') {
+    const key = i.options.getString('key').trim().toUpperCase();
+    const row = db.prepare('SELECT * FROM keys WHERE key = ?').get(key);
+    if (!row) return i.editReply('Unknown key.');
+    await i.editReply(
+      `Key: \`${row.key}\`\nTier: ${row.tier}\nOwner: ${row.redeemed_by ? `<@${row.redeemed_by}>` : 'unused'}\n` +
+      `Created: <t:${Math.floor(row.created_at / 1000)}:R>\nRevoked: ${row.revoked ? 'yes' : 'no'}`
+    );
+  }
+});
+
+client.login(DISCORD_TOKEN);
