@@ -1,9 +1,20 @@
-
-
-
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="dark">
+  <title>Nexel Emulator</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+<div class="window-controls window-controls-floating" aria-label="Window controls">
+  <button type="button" class="window-control" id="btn-minimize" aria-label="Minimize" title="Minimize">−</button>
+  <button type="button" class="window-control close" id="btn-close" aria-label="Close" title="Close">×</button>
+</div>
 <section id="screen-login" class="screen active">
   <div class="login-card">
-    <img class="login-logo" src="../../assets/icon.png" alt="">
+    <img class="login-logo" src="../../assets/icon.png.png" alt="Nexel">
     <h1>NEXEL<span>EMULATOR</span></h1>
     <p class="muted">You must login with Discord first. Please click the login button below.</p>
     <button id="btn-login" class="btn btn-primary">LOGIN WITH DISCORD</button>
@@ -11,24 +22,21 @@
   </div>
 </section>
 
-
 <section id="screen-key" class="screen">
   <div class="login-card">
     <h1>ACTIVATE<span>LICENSE</span></h1>
     <p class="muted" id="key-sub">Enter your key to continue.</p>
     <div class="key-wrap">
-      <span class="key-prefix">NEXEL-</span>
-      <input id="key-input" maxlength="24" spellcheck="false" placeholder="XXXXX-XXXXX-XXXXX-XXXXX">
+      <input id="key-input" maxlength="29" spellcheck="false" placeholder="NEXEL-XXXXX-XXXXX-XXXXX-XXXXX" autocomplete="off">
     </div>
     <button id="btn-redeem" class="btn btn-primary">ACTIVATE KEY</button>
     <p id="key-error" class="error"></p>
   </div>
 </section>
 
-
 <section id="screen-app" class="screen">
   <div class="topbar">
-    <div class="brand"><img src="../../assets/icon.png"><b>Nexel</b></div>
+    <div class="brand"><img src="../../assets/icon.png.png" alt=""><b>Nexel</b></div>
     <div class="topnav">
       <button class="tn active" data-view="home" title="Home">■</button>
       <button class="tn" data-view="subs" title="Subscriptions">◆</button>
@@ -37,7 +45,6 @@
     </div>
     <div class="spacer"></div>
     <div class="pill" id="license-pill"><i></i><span id="license-text">—</span></div>
-    <button id="btn-close" class="tn" title="Close">✕</button>
   </div>
 
   <div class="body">
@@ -46,7 +53,7 @@
       <button class="sb" data-view="spoof"><span>◉</span>Spoof</button>
       <button class="sb" data-view="settings"><span>⚙</span>Settings</button>
       <div class="sb-user">
-        <img id="avatar">
+        <img id="avatar" alt="Discord avatar">
         <div><b id="uname">—</b><small id="uhwid">—</small></div>
       </div>
     </nav>
@@ -74,7 +81,7 @@
         <div class="card">
           <div class="row"><div><b>Target executable</b><small id="exe-path">Not set</small></div><button class="btn btn-sm" id="btn-pick">BROWSE</button></div>
           <div class="row"><div><b>Auto-spoof on launch</b></div><label class="sw"><input type="checkbox" id="opt-spoof"><i></i></label></div>
-          <div class="row"><div><b>Console overlay</b></div><label class="sw"><input type="checkbox" id="opt-console" checked=""><i></i></label></div>
+          <div class="row"><div><b>Console overlay</b></div><label class="sw"><input type="checkbox" id="opt-console" checked><i></i></label></div>
           <div class="row"><div><b>Close to tray</b></div><label class="sw"><input type="checkbox" id="opt-tray"><i></i></label></div>
         </div>
       </div>
@@ -83,13 +90,14 @@
         <h2>LICENSE VAULT</h2>
         <div class="card">
           <div class="row"><div><b>Plan</b><small id="sub-plan">—</small></div></div>
+          <div class="row"><div><b>License key</b><small id="sub-key">—</small></div></div>
           <div class="row"><div><b>Expires</b><small id="sub-exp">—</small></div></div>
           <div class="row"><div><b>Time left</b><small id="sub-left">—</small></div></div>
         </div>
         <div class="card">
           <b>Redeem another key</b>
           <div class="row">
-            <input id="key2" placeholder="NEXEL-XXXXX-XXXXX-XXXXX-XXXXX">
+            <input id="key2" maxlength="29" placeholder="NEXEL-XXXXX-XXXXX-XXXXX-XXXXX" autocomplete="off">
             <button class="btn btn-sm" id="btn-redeem2">ADD</button>
           </div>
           <p id="sub-error" class="error"></p>
@@ -116,6 +124,6 @@
     <span id="sb-right">Nexel Emulator v1</span>
   </div>
 </section>
-
-
-
+<script type="module" src="./app.js"></script>
+</body>
+</html>

@@ -2,6 +2,8 @@ const $ = (s) => document.querySelector(s);
 const API = await window.nexel.apiBase();
 
 let state = { token: null, user: null, license: null, hwid: null, running: false, tick: 0, uptime: 0 };
+let lastLicenseBlockReason = null;
+let sessionCheckRunning = false;
 
 const views = ['home', 'spoof', 'settings', 'subs', 'telemetry', 'engine'];
 
@@ -15,7 +17,28 @@ function openView(name) {
 }
 
 document.querySelectorAll('[data-view]').forEach(b => b.onclick = () => openView(b.dataset.view));
-$('#btn-close').onclick = () => window.close();
+// Use pointerdown as well as click so the custom controls remain responsive
+// in frameless Electron windows with draggable title-bar regions.
+$('#btn-close').addEventListener('pointerdown', event => {
+  event.preventDefault();
+  event.stopPropagation();
+  window.nexel.close();
+});
+$('#btn-minimize').addEventListener('pointerdown', event => {
+  event.preventDefault();
+  event.stopPropagation();
+  window.nexel.minimize();
+});
+$('#btn-close').addEventListener('click', event => {
+  event.preventDefault();
+  event.stopPropagation();
+  window.nexel.close();
+});
+$('#btn-minimize').addEventListener('click', event => {
+  event.preventDefault();
+  event.stopPropagation();
+  window.nexel.minimize();
+});
 
 /* ---------- log ---------- */
 function log(msg) {
@@ -46,18 +69,21 @@ function renderLicense() {
     pill.classList.add('warn');
     $('#license-text').textContent = 'EXPIRED';
     $('#sub-plan').textContent = 'None';
+    $('#sub-key').textContent = '—';
     $('#sub-exp').textContent = '—';
     $('#sub-left').textContent = '—';
   } else {
     pill.classList.toggle('warn', left !== null && left < 3 * 86400000);
     $('#license-text').textContent = L.tier === 'lifetime' ? 'LIFETIME' : fmt(left);
     $('#sub-plan').textContent = L.tier === 'lifetime' ? 'Lifetime' : L.tier;
+    $('#sub-key').textContent = L.license_key || '—';
     $('#sub-exp').textContent = L.expires_at ? new Date(L.expires_at).toLocaleString() : 'Never';
     $('#sub-left').textContent = fmt(left);
   }
 }
 
 function applySession(data) {
+  lastLicenseBlockReason = null;
   state.token = data.token;
   state.user = data.user;
   state.license = data.license;
@@ -72,13 +98,46 @@ function applySession(data) {
   log(`session established for ${data.user.username}`);
 }
 
+function licenseBlockMessage(reason) {
+  if (reason === 'KEY_ALREADY_REDEEMED') return 'This key has already been redeemed and cannot be used again.';
+  if (reason === 'KEY_PAUSED') return 'Your key has been paused by admins. To see the reason why, please make a ticket.';
+  if (reason === 'KEY_DELETED') return 'Your key has been deleted by admins. To see the reason why, please make a ticket.';
+  if (reason === 'KEY_REVOKED') return 'Your key has been revoked by admins. To see the reason why, please make a ticket.';
+  return null;
+}
+
+function showLicensePage(data, expired = false, notice = null) {
+  state.running = false;
+  $('#btn-launch')?.classList.remove('running');
+  if ($('#btn-launch')) $('#btn-launch').textContent = 'LAUNCH';
+  if ($('#st-status')) $('#st-status').textContent = 'IDLE';
+  if (data.token) state.token = data.token;
+  if (data.user) state.user = data.user;
+  state.license = data.license || { active: false };
+  const message = notice || (expired
+    ? 'Your license has expired. Enter a new key to continue.'
+    : `Logged in as ${state.user?.username || 'your Discord account'}. Enter your key to continue.`);
+  $('#key-sub').textContent = message;
+  $('#key-error').textContent = '';
+  $('#key-input').value = '';
+  show('screen-key');
+  $('#key-input').focus();
+}
+
 /* ---------- boot ---------- */
 (async () => {
   state.hwid = await window.nexel.hwid();
   $('#uhwid').textContent = state.hwid.slice(0, 12) + '…';
 
   const r = await window.nexel.restore();
-  if (r.ok) return applySession(r);
+  if (r.ok) {
+    if (r.license?.active) return applySession(r);
+    return showLicensePage(r, !!r.license?.tier);
+  }
+  if (['KEY_PAUSED', 'KEY_DELETED', 'KEY_REVOKED'].includes(r.reason)) {
+    lastLicenseBlockReason = r.reason;
+    return showLicensePage(r, false, licenseBlockMessage(r.reason));
+  }
   if (r.reason === 'EXPIRED' || r.reason === 'HWID_MISMATCH') {
     $('#login-error').textContent =
       r.reason === 'HWID_MISMATCH' ? 'This key is locked to another PC.' : 'Session expired — log in again.';
@@ -96,6 +155,7 @@ $('#btn-login').onclick = async () => {
   if (!r.ok) {
     const map = {
       PORT_BUSY: 'Port 47823 is in use — close other instances.',
+      STATE_MISMATCH: 'Discord login state did not match. Please try again.',
       TIMEOUT: 'Login timed out.',
       NOT_IN_SERVER: 'You are not in the Discord server.',
       NETWORK: 'Cannot reach the license server.'
@@ -108,11 +168,13 @@ $('#btn-login').onclick = async () => {
   state.user = r.user;
   state.license = r.license;
 
+  if (r.licenseStatus) {
+    lastLicenseBlockReason = r.licenseStatus;
+    return showLicensePage(r, false, licenseBlockMessage(r.licenseStatus));
+  }
   if (r.license?.active) return applySession(r);
 
-  $('#key-sub').textContent = `Logged in as ${r.user.username}. Enter your key.`;
-  show('screen-key');
-  $('#key-input').focus();
+  showLicensePage(r, !!r.license?.tier);
 };
 
 /* ---------- redeem ---------- */
@@ -129,6 +191,9 @@ async function redeem(raw, errEl) {
       INVALID_KEY: 'Key does not exist.',
       KEY_USED: 'That key is already bound to another account.',
       KEY_REVOKED: 'That key was revoked.',
+      KEY_DELETED: 'That key was deleted and cannot be redeemed.',
+      KEY_PAUSED: 'That key has been paused by admins. Please make a ticket to see why.',
+      KEY_ALREADY_REDEEMED: 'That key has already been redeemed. Each key can only be used once.',
       HWID_MISMATCH: 'This account is locked to another PC.',
       RATE_LIMIT: 'Too many attempts, wait a minute.'
     };
@@ -176,6 +241,7 @@ $('#btn-pick').onclick = async () => {
 /* ---------- launch ---------- */
 $('#btn-launch').onclick = async () => {
   if (state.running) {
+    await window.nexel.stop();
     state.running = false;
     $('#btn-launch').classList.remove('running');
     $('#btn-launch').textContent = 'LAUNCH';
@@ -183,6 +249,32 @@ $('#btn-launch').onclick = async () => {
     log('session closed');
     return;
   }
+
+  // Validate with the server immediately before every launch.
+  $('#btn-launch').disabled = true;
+  $('#btn-launch').textContent = 'CHECKING LICENSE…';
+  const check = await window.nexel.checkSession();
+  $('#btn-launch').disabled = false;
+  $('#btn-launch').textContent = 'LAUNCH';
+
+  if (!check.ok || !check.license?.active) {
+    await window.nexel.stop();
+    state.running = false;
+    $('#btn-launch').classList.remove('running');
+    $('#st-status').textContent = 'IDLE';
+    if (['KEY_PAUSED', 'KEY_DELETED', 'KEY_REVOKED'].includes(check.reason)) {
+      lastLicenseBlockReason = check.reason;
+      showLicensePage(check, false, licenseBlockMessage(check.reason));
+    } else if (check.reason === 'EXPIRED' || !check.license?.active) {
+      showLicensePage(check, true);
+    } else {
+      showLicensePage(check, false, 'Unable to verify your license. Check your connection and try again.');
+    }
+    log(`launch blocked: ${check.reason || 'license inactive'}`);
+    return;
+  }
+
+  state.license = check.license;
   state.running = true;
   state.uptime = 0;
   $('#btn-launch').classList.add('running');
@@ -195,7 +287,19 @@ $('#btn-launch').onclick = async () => {
   const target = $('#exe-path').textContent;
   if (target !== 'Not set') {
     const r = await window.nexel.launch(target);
-    log(r.ok ? 'spawned target' : 'target missing, loader-only mode');
+    if (!r.ok) {
+      state.running = false;
+      $('#btn-launch').classList.remove('running');
+      $('#btn-launch').textContent = 'LAUNCH';
+      $('#st-status').textContent = 'IDLE';
+      if (['KEY_PAUSED', 'KEY_DELETED', 'KEY_REVOKED'].includes(r.reason)) {
+        lastLicenseBlockReason = r.reason;
+        showLicensePage({ token: state.token, user: state.user, license: state.license }, false, licenseBlockMessage(r.reason));
+      }
+      log(r.reason === 'TARGET_MISSING' ? 'target executable not found' : `launch blocked: ${r.reason}`);
+      return;
+    }
+    log('spawned target');
   } else {
     log('no target set, loader-only mode');
   }
@@ -209,6 +313,42 @@ $('#engine-grid').innerHTML = [
   ['CPUID hook', 'Masked'],
   ['Timing sync', '±0.02ms']
 ].map(([a, b]) => `<div class="card"><b>${a}</b><small>${b}</small></div>`).join('');
+
+/* ---------- live license enforcement ---------- */
+async function enforceLicenseStatus() {
+  if (sessionCheckRunning || !state.token) return;
+  sessionCheckRunning = true;
+  try {
+    const result = await window.nexel.checkSession();
+    if (result.ok) {
+      if (result.license?.active && $('#screen-key').classList.contains('active')) {
+        applySession(result);
+      } else if (!result.license?.active && $('#screen-app').classList.contains('active')) {
+        await window.nexel.stop();
+        state.running = false;
+        showLicensePage(result, true);
+      }
+      return;
+    }
+
+    if (['KEY_PAUSED', 'KEY_DELETED', 'KEY_REVOKED'].includes(result.reason)) {
+      if (lastLicenseBlockReason === result.reason && $('#screen-key').classList.contains('active')) return;
+      lastLicenseBlockReason = result.reason;
+      await window.nexel.stop();
+      state.running = false;
+      $('#btn-launch')?.classList.remove('running');
+      if ($('#btn-launch')) $('#btn-launch').textContent = 'LAUNCH';
+      if ($('#st-status')) $('#st-status').textContent = 'IDLE';
+      showLicensePage(result, false, licenseBlockMessage(result.reason));
+    }
+  } catch (error) {
+    console.warn('[license] status check failed:', error?.message || error);
+  } finally {
+    sessionCheckRunning = false;
+  }
+}
+
+setInterval(enforceLicenseStatus, 2500);
 
 /* ---------- heartbeat + clock ---------- */
 setInterval(() => {
@@ -227,11 +367,9 @@ setInterval(() => {
   if (state.license?.expires_at) {
     state.license.active = state.license.expires_at > Date.now();
     renderLicense();
-    if (!state.license.active && state.token) {
-      log('license expired — re-login required');
-      state.token = null;
-      window.nexel.logout();
-      setTimeout(() => location.reload(), 1800);
+    if (!state.license.active && state.token && $('#screen-app').classList.contains('active')) {
+      log('license expired — activation required');
+      showLicensePage({ token: state.token, user: state.user, license: state.license }, true);
     }
   }
 }, 1000);
