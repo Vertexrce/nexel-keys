@@ -68,10 +68,22 @@ function getUser(id) {
   return db.prepare('SELECT * FROM users WHERE discord_id = ?').get(id);
 }
 
+// Returns an admin action affecting the currently assigned key. Keeping the
+// user's license_key after deletion lets the API distinguish a deleted key
+// from an account that has never redeemed one.
+function getLicenseBlockReason(user) {
+  if (!user?.license_key) return null;
+  const keyRow = db.prepare('SELECT revoked, paused, deleted FROM keys WHERE key = ?').get(user.license_key);
+  if (!keyRow || keyRow.deleted) return 'KEY_DELETED';
+  if (keyRow.revoked) return 'KEY_REVOKED';
+  if (keyRow.paused) return 'KEY_PAUSED';
+  return null;
+}
+
 function licenseState(user) {
   if (!user || !user.tier) return { active: false, tier: null, expires_at: null };
-  if (user.tier === 'lifetime') return { active: true, tier: 'lifetime', expires_at: null };
-  return { active: !!user.expires_at && user.expires_at > Date.now(), tier: user.tier, expires_at: user.expires_at };
+  if (user.tier === 'lifetime') return { active: true, tier: 'lifetime', expires_at: null, license_key: user.license_key || null };
+  return { active: !!user.expires_at && user.expires_at > Date.now(), tier: user.tier, expires_at: user.expires_at, license_key: user.license_key || null };
 }
 
 /* ---------------- OAuth ---------------- */
@@ -147,7 +159,8 @@ app.post('/auth/exchange', async (req, res) => {
         avatar: user.avatar,
         hwidBound: !!user.hwid
       },
-      license: licenseState(user)
+      license: licenseState(user),
+      licenseStatus: getLicenseBlockReason(user)
     });
   } catch (e) {
     console.error(e);
@@ -162,56 +175,83 @@ app.get('/session/me', requireAuth, (req, res) => {
   if (user.hwid && req.claims.hwid && user.hwid !== req.claims.hwid) {
     return res.status(403).json({ error: 'HWID_MISMATCH' });
   }
-  res.json({
-    user: { id: user.discord_id, username: user.username, avatar: user.avatar },
-    license: licenseState(user)
-  });
+  const userView = { id: user.discord_id, username: user.username, avatar: user.avatar };
+  const blocked = getLicenseBlockReason(user);
+  if (blocked) {
+    return res.status(403).json({
+      error: blocked,
+      user: userView,
+      license: licenseState(user)
+    });
+  }
+  res.json({ user: userView, license: licenseState(user) });
 });
 
 /* ---------------- redeem ---------------- */
 app.post('/license/redeem', requireAuth, (req, res) => {
-  const raw = (req.body?.key || '').trim().toUpperCase();
+  const raw = String(req.body?.key || '').trim().toUpperCase();
   if (!raw) return res.status(400).json({ error: 'NO_KEY' });
   if (!limit('rd:' + req.claims.sub, 10, 60_000)) return res.status(429).json({ error: 'RATE_LIMIT' });
 
-  const user = getUser(req.claims.sub);
-  if (!user) return res.status(404).json({ error: 'NO_USER' });
+  // Run validation and updates in one SQLite transaction so two simultaneous
+  // requests cannot redeem the same key twice.
+  const activate = db.transaction(() => {
+    const user = getUser(req.claims.sub);
+    if (!user) return { error: 'NO_USER', status: 404 };
 
-  const row = db.prepare('SELECT * FROM keys WHERE key = ?').get(raw);
-  if (!row) return res.status(404).json({ error: 'INVALID_KEY' });
-  if (row.revoked) return res.status(403).json({ error: 'KEY_REVOKED' });
-  if (row.redeemed_by && row.redeemed_by !== user.discord_id) {
-    return res.status(403).json({ error: 'KEY_USED' });
-  }
+    // The currently assigned key is never redeemable again, even if an admin
+    // soft-deleted its key row. This also prevents adding the same key in Vault.
+    if (user.license_key && user.license_key.toUpperCase() === raw) {
+      return { error: 'KEY_ALREADY_REDEEMED', status: 403 };
+    }
 
-  // HWID lock: first device wins
-  const hwid = req.claims.hwid;
-  if (!user.hwid) {
-    db.prepare('UPDATE users SET hwid = ? WHERE discord_id = ?').run(hwid, user.discord_id);
-  } else if (user.hwid !== hwid) {
-    return res.status(403).json({ error: 'HWID_MISMATCH' });
-  }
+    const row = db.prepare('SELECT * FROM keys WHERE key = ?').get(raw);
+    if (!row) return { error: 'INVALID_KEY', status: 404 };
+    if (row.deleted) return { error: 'KEY_DELETED', status: 403 };
+    if (row.revoked) return { error: 'KEY_REVOKED', status: 403 };
+    if (row.paused) return { error: 'KEY_PAUSED', status: 403 };
+    if (row.redeemed_by) {
+      return {
+        error: row.redeemed_by === user.discord_id ? 'KEY_ALREADY_REDEEMED' : 'KEY_USED',
+        status: 403
+      };
+    }
 
-  const now = Date.now();
-  let newExpiry = null;
-  if (TIERS[row.tier].ms === null) {
-    newExpiry = null;
-  } else {
-    const base = user.expires_at && user.expires_at > now && user.tier !== 'lifetime' ? user.expires_at : now;
-    newExpiry = base + TIERS[row.tier].ms;
-  }
-  const newTier = user.tier === 'lifetime' ? 'lifetime' : row.tier;
+    // HWID lock: first device wins.
+    const hwid = req.claims.hwid;
+    if (!hwid) return { error: 'HWID_MISMATCH', status: 403 };
+    if (!user.hwid) {
+      db.prepare('UPDATE users SET hwid = ? WHERE discord_id = ?').run(hwid, user.discord_id);
+    } else if (user.hwid !== hwid) {
+      return { error: 'HWID_MISMATCH', status: 403 };
+    }
 
-  db.prepare('UPDATE users SET tier = ?, expires_at = ?, license_key = ? WHERE discord_id = ?')
-    .run(newTier, newTier === 'lifetime' ? null : newExpiry, raw, user.discord_id);
+    const now = Date.now();
+    let newExpiry = null;
+    if (TIERS[row.tier].ms !== null) {
+      const base = user.expires_at && user.expires_at > now && user.tier !== 'lifetime'
+        ? user.expires_at : now;
+      newExpiry = base + TIERS[row.tier].ms;
+    }
+    const newTier = user.tier === 'lifetime' ? 'lifetime' : row.tier;
 
-  if (!row.redeemed_by) {
+    db.prepare('UPDATE users SET tier = ?, expires_at = ?, license_key = ? WHERE discord_id = ?')
+      .run(newTier, newTier === 'lifetime' ? null : newExpiry, raw, user.discord_id);
     db.prepare('UPDATE keys SET redeemed_by = ?, redeemed_at = ?, expires_at = ? WHERE key = ?')
       .run(user.discord_id, now, newTier === 'lifetime' ? null : newExpiry, raw);
-  }
 
-  const updated = getUser(user.discord_id);
-  res.json({ ok: true, license: licenseState(updated), token: issueToken(updated) });
+    const updated = getUser(user.discord_id);
+    return { ok: true, license: licenseState(updated), token: issueToken(updated) };
+  });
+
+  try {
+    const result = activate();
+    if (result.error) return res.status(result.status).json({ error: result.error });
+    res.json(result);
+  } catch (error) {
+    console.error('[license] redemption failed:', error);
+    res.status(500).json({ error: 'REDEEM_FAILED' });
+  }
 });
 
 /* ---------------- health ---------------- */

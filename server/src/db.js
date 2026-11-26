@@ -29,10 +29,21 @@ CREATE TABLE IF NOT EXISTS keys (
   redeemed_by TEXT,
   redeemed_at INTEGER,
   expires_at  INTEGER,
-  revoked     INTEGER NOT NULL DEFAULT 0
+  revoked     INTEGER NOT NULL DEFAULT 0,
+  paused      INTEGER NOT NULL DEFAULT 0,
+  deleted     INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_keys_redeemed ON keys(redeemed_by);
 `);
+
+// Upgrade older Nexel databases without losing existing keys.
+const keyColumns = db.prepare('PRAGMA table_info(keys)').all();
+if (!keyColumns.some(column => column.name === 'paused')) {
+  db.exec('ALTER TABLE keys ADD COLUMN paused INTEGER NOT NULL DEFAULT 0');
+}
+if (!keyColumns.some(column => column.name === 'deleted')) {
+  db.exec('ALTER TABLE keys ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0');
+}
 
 module.exports = db;
