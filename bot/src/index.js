@@ -20,6 +20,9 @@ const keyColumns = db.prepare('PRAGMA table_info(keys)').all();
 if (!keyColumns.some(column => column.name === 'paused')) {
   db.exec('ALTER TABLE keys ADD COLUMN paused INTEGER NOT NULL DEFAULT 0');
 }
+if (!keyColumns.some(column => column.name === 'deleted')) {
+  db.exec('ALTER TABLE keys ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0');
+}
 
 const TIERS = {
   '1d':       { label: '1 Day',    ms: 86_400_000 },
@@ -150,6 +153,7 @@ client.once('ready', () => {
 });
 
 function keyStatus(row) {
+  if (row.deleted) return 'DELETED';
   if (row.paused) return 'PAUSED';
   if (row.redeemed_by) return `used ${row.redeemed_by}`;
   return 'unused';
@@ -184,7 +188,7 @@ client.on('interactionCreate', async interaction => {
 
       const key = normalizeKey(interaction.options.getString('key'));
       const row = db.prepare('SELECT * FROM keys WHERE key = ?').get(key);
-      if (!row) return interaction.editReply('❌ Key not found. It may already have been deleted.');
+      if (!row || row.deleted) return interaction.editReply('❌ Key not found. It may already have been deleted.');
 
       if (subcommand === 'pause') {
         if (row.revoked) return interaction.editReply('❌ This key is already revoked.');
@@ -196,6 +200,7 @@ client.on('interactionCreate', async interaction => {
       }
 
       if (subcommand === 'unpause') {
+        if (row.deleted) return interaction.editReply('❌ This key was deleted and cannot be unpaused.');
         if (row.revoked) return interaction.editReply('❌ This key is revoked and cannot be unpaused.');
         if (!row.paused) return interaction.editReply('This key is not paused.');
         db.prepare('UPDATE keys SET paused = 0 WHERE key = ?').run(key);
@@ -203,12 +208,9 @@ client.on('interactionCreate', async interaction => {
       }
 
       if (subcommand === 'delete') {
-        // Keep users.license_key as a tombstone so /session/me can identify
-        // the deleted key and immediately force the desktop client to activation.
-        const remove = db.transaction(() => {
-          db.prepare('DELETE FROM keys WHERE key = ?').run(key);
-        });
-        remove();
+        // Soft-delete: preserve the key forever as a tombstone so it cannot
+        // be re-generated/redeemed and active sessions are invalidated.
+        db.prepare('UPDATE keys SET deleted = 1 WHERE key = ?').run(key);
         return interaction.editReply(
           `🗑️ Deleted \`${key}\`. The emulator will detect the deletion on its next license check and return the user to the license page.`
         );
@@ -237,7 +239,7 @@ client.on('interactionCreate', async interaction => {
 
     if (interaction.commandName === 'keys') {
       const rows = db.prepare(
-        'SELECT * FROM keys WHERE revoked = 0 ORDER BY created_at DESC LIMIT 20'
+        'SELECT * FROM keys WHERE revoked = 0 AND deleted = 0 ORDER BY created_at DESC LIMIT 20'
       ).all();
       if (!rows.length) return interaction.editReply('No active keys yet.');
       const lines = rows.map(row =>
