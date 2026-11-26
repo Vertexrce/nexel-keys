@@ -1,0 +1,121 @@
+
+
+
+<section id="screen-login" class="screen active">
+  <div class="login-card">
+    <img class="login-logo" src="../../assets/icon.png" alt="">
+    <h1>NEXEL<span>EMULATOR</span></h1>
+    <p class="muted">You must login with Discord first. Please click the login button below.</p>
+    <button id="btn-login" class="btn btn-primary">LOGIN WITH DISCORD</button>
+    <p id="login-error" class="error"></p>
+  </div>
+</section>
+
+
+<section id="screen-key" class="screen">
+  <div class="login-card">
+    <h1>ACTIVATE<span>LICENSE</span></h1>
+    <p class="muted" id="key-sub">Enter your key to continue.</p>
+    <div class="key-wrap">
+      <span class="key-prefix">NEXEL-</span>
+      <input id="key-input" maxlength="24" spellcheck="false" placeholder="XXXXX-XXXXX-XXXXX-XXXXX">
+    </div>
+    <button id="btn-redeem" class="btn btn-primary">ACTIVATE KEY</button>
+    <p id="key-error" class="error"></p>
+  </div>
+</section>
+
+
+<section id="screen-app" class="screen">
+  <div class="topbar">
+    <div class="brand"><img src="../../assets/icon.png"><b>Nexel</b></div>
+    <div class="topnav">
+      <button class="tn active" data-view="home" title="Home">■</button>
+      <button class="tn" data-view="subs" title="Subscriptions">◆</button>
+      <button class="tn" data-view="telemetry" title="Telemetry">▲</button>
+      <button class="tn" data-view="engine" title="Engine">⚙</button>
+    </div>
+    <div class="spacer"></div>
+    <div class="pill" id="license-pill"><i></i><span id="license-text">—</span></div>
+    <button id="btn-close" class="tn" title="Close">✕</button>
+  </div>
+
+  <div class="body">
+    <nav class="sidebar">
+      <button class="sb active" data-view="home"><span>▶</span>Launch</button>
+      <button class="sb" data-view="spoof"><span>◉</span>Spoof</button>
+      <button class="sb" data-view="settings"><span>⚙</span>Settings</button>
+      <div class="sb-user">
+        <img id="avatar">
+        <div><b id="uname">—</b><small id="uhwid">—</small></div>
+      </div>
+    </nav>
+
+    <main class="main">
+      <div class="view active" id="view-home">
+        <h2 class="big">NEXEL EMULATOR</h2>
+        <p class="muted">v1.0.0 · hypervisor ready</p>
+        <button id="btn-launch" class="btn-launch">LAUNCH</button>
+        <div class="stats">
+          <div class="stat"><small>STATUS</small><b id="st-status">IDLE</b></div>
+          <div class="stat"><small>UPTIME</small><b id="st-uptime">00:00:00</b></div>
+          <div class="stat"><small>SPOOF</small><b id="st-spoof">OFF</b></div>
+        </div>
+      </div>
+
+      <div class="view" id="view-spoof">
+        <h2>HWID SPOOFER</h2>
+        <button id="btn-spoof" class="btn btn-primary">SPOOF ALL</button>
+        <div class="grid" id="spoof-grid"></div>
+      </div>
+
+      <div class="view" id="view-settings">
+        <h2>SETTINGS</h2>
+        <div class="card">
+          <div class="row"><div><b>Target executable</b><small id="exe-path">Not set</small></div><button class="btn btn-sm" id="btn-pick">BROWSE</button></div>
+          <div class="row"><div><b>Auto-spoof on launch</b></div><label class="sw"><input type="checkbox" id="opt-spoof"><i></i></label></div>
+          <div class="row"><div><b>Console overlay</b></div><label class="sw"><input type="checkbox" id="opt-console" checked=""><i></i></label></div>
+          <div class="row"><div><b>Close to tray</b></div><label class="sw"><input type="checkbox" id="opt-tray"><i></i></label></div>
+        </div>
+      </div>
+
+      <div class="view" id="view-subs">
+        <h2>LICENSE VAULT</h2>
+        <div class="card">
+          <div class="row"><div><b>Plan</b><small id="sub-plan">—</small></div></div>
+          <div class="row"><div><b>Expires</b><small id="sub-exp">—</small></div></div>
+          <div class="row"><div><b>Time left</b><small id="sub-left">—</small></div></div>
+        </div>
+        <div class="card">
+          <b>Redeem another key</b>
+          <div class="row">
+            <input id="key2" placeholder="NEXEL-XXXXX-XXXXX-XXXXX-XXXXX">
+            <button class="btn btn-sm" id="btn-redeem2">ADD</button>
+          </div>
+          <p id="sub-error" class="error"></p>
+        </div>
+        <button class="btn btn-ghost" id="btn-logout">LOG OUT</button>
+      </div>
+
+      <div class="view" id="view-telemetry">
+        <h2>TELEMETRY</h2>
+        <div class="card"><b>Heartbeat</b><div class="hb" id="hb"></div></div>
+        <div class="card console" id="console"></div>
+      </div>
+
+      <div class="view" id="view-engine">
+        <h2>HYPERVISOR ENGINE</h2>
+        <div class="grid" id="engine-grid"></div>
+      </div>
+    </main>
+  </div>
+
+  <div class="statusbar">
+    <span id="sb-left">Connected</span>
+    <span class="spacer"></span>
+    <span id="sb-right">Nexel Emulator v1</span>
+  </div>
+</section>
+
+
+
