@@ -16,6 +16,7 @@ const OAUTH_PORT = 47823;
 
 let win;
 let oauthServer = null;
+let activeChild = null;
 
 function storePath() {
   return path.join(app.getPath('userData'), 'session.bin');
@@ -63,6 +64,8 @@ function createWindow() {
     minWidth: 1100,
     minHeight: 700,
     frame: false,
+    titleBarStyle: 'hidden',
+    autoHideMenuBar: true,
     show: false,
     backgroundColor: '#03060f',
     webPreferences: {
@@ -79,6 +82,26 @@ app.whenReady().then(createWindow);
 app.on('window-all-closed', () => app.quit());
 
 ipcMain.handle('app:api', () => API);
+ipcMain.handle('window:minimize', (event) => {
+  const target = BrowserWindow.fromWebContents(event.sender);
+  if (target && !target.isDestroyed()) target.minimize();
+  return true;
+});
+ipcMain.handle('window:close', (event) => {
+  const target = BrowserWindow.fromWebContents(event.sender);
+  if (target && !target.isDestroyed()) target.close();
+  return true;
+});
+// Fire-and-forget handlers back the visible custom title-bar controls. These
+// avoid a renderer awaiting an invoke response while the window is closing.
+ipcMain.on('window:minimize-now', (event) => {
+  const target = BrowserWindow.fromWebContents(event.sender);
+  if (target && !target.isDestroyed()) target.minimize();
+});
+ipcMain.on('window:close-now', (event) => {
+  const target = BrowserWindow.fromWebContents(event.sender);
+  if (target && !target.isDestroyed()) target.close();
+});
 ipcMain.handle('app:hwid', () => getHwid());
 ipcMain.handle('app:open', (_e, url) => shell.openExternal(url));
 ipcMain.handle('app:pick', async () => {
@@ -88,10 +111,41 @@ ipcMain.handle('app:pick', async () => {
   });
   return r.canceled ? null : r.filePaths[0];
 });
-ipcMain.handle('app:launch', (_e, p) => {
-  if (!p || !fs.existsSync(p)) return { ok: false };
-  require('child_process').spawn(p, { detached: true, stdio: 'ignore' }).unref();
-  return { ok: true };
+ipcMain.handle('app:launch', async (_event, p) => {
+  // Enforce licensing in the main process as well as the renderer. This makes
+  // launch fail closed if a key was paused/revoked/deleted or the server is down.
+  const token = readToken();
+  if (!token) return { ok: false, reason: 'NO_SESSION' };
+  try {
+    const check = await fetch(`${API}/session/me`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    const data = await check.json();
+    if (!check.ok) return { ok: false, reason: data.error || 'SESSION_CHECK_FAILED' };
+    if (!data.license?.active) return { ok: false, reason: 'EXPIRED' };
+  } catch {
+    return { ok: false, reason: 'OFFLINE' };
+  }
+
+  if (!p || !fs.existsSync(p)) return { ok: false, reason: 'TARGET_MISSING' };
+  try {
+    if (activeChild && !activeChild.killed) activeChild.kill();
+    activeChild = require('child_process').spawn(p, { detached: false, stdio: 'ignore' });
+    activeChild.on('exit', () => { activeChild = null; });
+    activeChild.on('error', () => { activeChild = null; });
+    return { ok: true };
+  } catch {
+    activeChild = null;
+    return { ok: false, reason: 'LAUNCH_FAILED' };
+  }
+});
+
+ipcMain.handle('app:stop', () => {
+  if (activeChild && !activeChild.killed) {
+    try { activeChild.kill(); } catch {}
+  }
+  activeChild = null;
+  return true;
 });
 
 ipcMain.handle('auth:logout', () => { clearToken(); return true; });
@@ -102,8 +156,29 @@ ipcMain.handle('auth:restore', async () => {
   try {
     const r = await fetch(`${API}/session/me`, { headers: { Authorization: `Bearer ${token}` } });
     const data = await r.json();
-    if (r.status === 403) { clearToken(); return { ok: false, reason: data.error }; }
+    if (r.status === 403 && ['KEY_PAUSED', 'KEY_DELETED', 'KEY_REVOKED'].includes(data.error)) {
+      return { ok: false, reason: data.error, token, user: data.user, license: data.license };
+    }
+    if (r.status === 403) { clearToken(); return { ok: false, reason: data.error || 'FORBIDDEN' }; }
     if (!r.ok) { clearToken(); return { ok: false, reason: 'EXPIRED' }; }
+    return { ok: true, token, ...data };
+  } catch {
+    return { ok: false, reason: 'OFFLINE' };
+  }
+});
+
+// Periodic desktop check used to enforce admin pause/delete actions on active sessions.
+ipcMain.handle('auth:check', async () => {
+  const token = readToken();
+  if (!token) return { ok: false, reason: 'NO_SESSION' };
+  try {
+    const r = await fetch(`${API}/session/me`, { headers: { Authorization: `Bearer ${token}` } });
+    const data = await r.json();
+    if (r.status === 403 && ['KEY_PAUSED', 'KEY_DELETED', 'KEY_REVOKED'].includes(data.error)) {
+      return { ok: false, reason: data.error, token, user: data.user, license: data.license };
+    }
+    if (r.status === 403) return { ok: false, reason: data.error || 'FORBIDDEN' };
+    if (!r.ok) return { ok: false, reason: data.error || 'SESSION_CHECK_FAILED' };
     return { ok: true, token, ...data };
   } catch {
     return { ok: false, reason: 'OFFLINE' };
@@ -113,10 +188,12 @@ ipcMain.handle('auth:restore', async () => {
 ipcMain.handle('auth:start', () => new Promise((resolve) => {
   const state = crypto.randomBytes(16).toString('hex');
   let settled = false;
+  let timeoutHandle = null;
 
   const done = (payload) => {
     if (settled) return;
     settled = true;
+    if (timeoutHandle) clearTimeout(timeoutHandle);
     try { oauthServer?.close(); } catch {}
     oauthServer = null;
     resolve(payload);
@@ -125,6 +202,13 @@ ipcMain.handle('auth:start', () => new Promise((resolve) => {
   oauthServer = http.createServer(async (req, res) => {
     const url = new URL(req.url, `http://127.0.0.1:${OAUTH_PORT}`);
     if (url.pathname !== '/callback') { res.writeHead(404).end(); return; }
+
+    const returnedState = url.searchParams.get('state');
+    if (returnedState !== state) {
+      res.writeHead(400, { 'Content-Type': 'text/plain' });
+      res.end('OAuth state validation failed. You can close this tab.');
+      return done({ ok: false, reason: 'STATE_MISMATCH' });
+    }
 
     const code = url.searchParams.get('code');
     res.writeHead(200, { 'Content-Type': 'text/html' });
@@ -141,7 +225,7 @@ ipcMain.handle('auth:start', () => new Promise((resolve) => {
       const data = await r.json();
       if (!r.ok) return done({ ok: false, reason: data.error || 'EXCHANGE_FAILED' });
       saveToken(data.token);
-      done({ ok: true, token: data.token, user: data.user, license: data.license });
+      done({ ok: true, token: data.token, user: data.user, license: data.license, licenseStatus: data.licenseStatus || null });
     } catch {
       done({ ok: false, reason: 'NETWORK' });
     }
@@ -152,7 +236,7 @@ ipcMain.handle('auth:start', () => new Promise((resolve) => {
     shell.openExternal(`${API}/auth/discord?state=${state}`);
   });
 
-  setTimeout(() => done({ ok: false, reason: 'TIMEOUT' }), 180_000);
+  timeoutHandle = setTimeout(() => done({ ok: false, reason: 'TIMEOUT' }), 180_000);
 }));
 
 ipcMain.handle('license:redeem', async (_e, key) => {
