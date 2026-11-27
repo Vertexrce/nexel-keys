@@ -3,7 +3,7 @@ const path = require('path');
 const fs = require('fs');
 const http = require('http');
 const crypto = require('crypto');
-const { spawn, execFile } = require('child_process');
+const { spawn, execFile, execFileSync } = require('child_process');
 const { machineIdSync } = require('node-machine-id');
 
 let config = { api: 'http://localhost:3000', epic: {} };
@@ -17,10 +17,12 @@ const EPIC = String(config.epic?.base || 'https://account-public-service-prod.ol
 const EPIC_DEFAULT_ID = config.epic?.clientId || '';
 const EPIC_DEFAULT_SECRET = config.epic?.clientSecret || '';
 const OAUTH_PORT = 47823;
+const DEEP_LINK = 'com.epicgames.launcher://apps/fn?action=launch&silent=true';
 
 let win;
 let oauthServer = null;
 let activeChild = null;
+let gameWatch = null;
 
 /* ---------------- session token ---------------- */
 
@@ -67,6 +69,13 @@ function getHwid() {
 
 const FORTNITE_EXE = 'FortniteClient-Win64-Shipping.exe';
 const BOOTSTRAPPER_EXE = 'FortniteBootstrapper.exe';
+const EAC_EXES = ['EasyAntiCheat_EOS.exe', 'EasyAntiCheat.exe'];
+const GAME_PROCS = [
+  'FortniteBootstrapper.exe',
+  'FortniteLauncher.exe',
+  'FortniteClient-Win64-Shipping_EAC_EOS.exe',
+  'FortniteClient-Win64-Shipping.exe'
+];
 
 const EAC_WRAPPERS = [
   'fortniteclient-win64-shipping_eac_eos.exe',
@@ -75,8 +84,6 @@ const EAC_WRAPPERS = [
   'fortnitebootstrapper.exe'
 ];
 
-// -EpicPortal is the "launched by a launcher" signal the EOS layer reads.
-// Without it the game stops with the launcher-check popup before booting.
 const BASE_ARGS = [
   '-epicapp=Fortnite',
   '-epicenv=Prod',
@@ -97,10 +104,15 @@ function readCfg() {
       bootstrapper: c.bootstrapper || null,
       args: c.args || '',
       mode: c.mode === 'eac' ? 'eac' : 'noeac',
-      obfuscationId: c.obfuscationId || ''
+      obfuscationId: c.obfuscationId || '',
+      launchViaLauncher: c.launchViaLauncher !== false,
+      disableAc: c.disableAc !== false
     };
   } catch {
-    return { target: null, bootstrapper: null, args: '', mode: 'noeac', obfuscationId: '' };
+    return {
+      target: null, bootstrapper: null, args: '', mode: 'noeac', obfuscationId: '',
+      launchViaLauncher: true, disableAc: true
+    };
   }
 }
 
@@ -111,7 +123,9 @@ function writeCfg(c) {
     bootstrapper: c.bootstrapper ?? cur.bootstrapper,
     args: c.args ?? cur.args,
     mode: c.mode ?? cur.mode,
-    obfuscationId: c.obfuscationId ?? cur.obfuscationId
+    obfuscationId: c.obfuscationId ?? cur.obfuscationId,
+    launchViaLauncher: c.launchViaLauncher ?? cur.launchViaLauncher,
+    disableAc: c.disableAc ?? cur.disableAc
   };
   try { fs.writeFileSync(cfgPath(), JSON.stringify(next)); } catch {}
 }
@@ -134,47 +148,103 @@ function splitArgs(s) {
   return (String(s || '').match(/"[^"]*"|\S+/g) || []).map(a => a.replace(/^"|"$/g, ''));
 }
 
-function manifestDir() {
-  return 'C:\\ProgramData\\Epic\\EpicGamesLauncher\\Data\\Manifests';
+/* ---------------- install discovery ---------------- */
+
+function manifestDirs() {
+  return [
+    'C:\\ProgramData\\Epic\\EpicGamesLauncher\\Data\\Manifests',
+    'C:\\ProgramData\\Epic\\UnrealEngineLauncher\\Data\\Manifests'
+  ];
 }
 
 function readManifestInfo(appName) {
   let install = null;
   let obfuscationId = '';
-  try {
-    for (const f of fs.readdirSync(manifestDir())) {
+  for (const dir of manifestDirs()) {
+    let files = [];
+    try { files = fs.readdirSync(dir); } catch { continue; }
+    for (const f of files) {
       if (!f.endsWith('.item')) continue;
       try {
-        const j = JSON.parse(fs.readFileSync(path.join(manifestDir(), f), 'utf8'));
+        const j = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
         if (String(j.AppName || '').toLowerCase() !== appName) continue;
         if (j.InstallLocation) install = j.InstallLocation;
         const m = String(j.LaunchCommand || '').match(/-obfuscationid=([A-Za-z0-9]+)/);
         if (m) obfuscationId = m[1];
       } catch {}
     }
-  } catch {}
+  }
   return { install, obfuscationId };
+}
+
+function launcherInstalledDirs() {
+  const out = [];
+  const p = 'C:\\ProgramData\\Epic\\UnrealEngineLauncher\\LauncherInstalled.dat';
+  try {
+    const j = JSON.parse(fs.readFileSync(p, 'utf8'));
+    for (const e of j.InstallationList || []) {
+      if (e?.InstallLocation) out.push(e.InstallLocation);
+    }
+  } catch {}
+  return out;
+}
+
+function regInstallDirs() {
+  const out = [];
+  for (const key of [
+    'HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Fortnite',
+    'HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Fortnite',
+    'HKCU\\Software\\Epic Games\\Fortnite'
+  ]) {
+    for (const value of ['InstallLocation', 'InstallPath']) {
+      try {
+        const s = execFileSync('reg', ['query', key, '/v', value], { encoding: 'utf8', windowsHide: true });
+        const m = s.match(/REG_(?:SZ|EXPAND_SZ)\s+(.+)/);
+        if (m) out.push(m[1].trim().replace(/^"|"$/g, ''));
+      } catch {}
+    }
+  }
+  return out;
+}
+
+function commonRoots() {
+  const roots = [];
+  for (const base of [process.env['ProgramFiles(x86)'], process.env.ProgramFiles]) {
+    if (base) roots.push(path.join(base, 'Epic Games', 'Fortnite'));
+  }
+  for (const l of 'CDEFGH') {
+    roots.push(`${l}:\\Epic Games\\Fortnite`, `${l}:\\Fortnite`, `${l}:\\Games\\Fortnite`);
+  }
+  return roots;
+}
+
+function resolveBin(dir) {
+  if (!dir) return null;
+  for (const b of [dir, path.join(dir, 'FortniteGame', 'Binaries', 'Win64')]) {
+    const exe = path.join(b, FORTNITE_EXE);
+    try { if (fs.existsSync(exe)) return b; } catch {}
+  }
+  return null;
 }
 
 function findFortnite() {
   const { install, obfuscationId } = readManifestInfo('fortnite');
-  const roots = [];
-  if (install) roots.push(install);
-  roots.push(
-    'C:\\Program Files\\Epic Games\\Fortnite',
-    'C:\\Program Files (x86)\\Epic Games\\Fortnite',
-    'D:\\Epic Games\\Fortnite',
-    'E:\\Epic Games\\Fortnite',
-    'D:\\Fortnite',
-    'E:\\Fortnite'
-  );
+  const roots = [
+    install,
+    ...launcherInstalledDirs(),
+    ...regInstallDirs(),
+    ...commonRoots()
+  ].filter(Boolean);
+
   for (const root of roots) {
-    const bin = path.join(root, 'FortniteGame', 'Binaries', 'Win64');
-    const exe = path.join(bin, FORTNITE_EXE);
+    const bin = resolveBin(root);
+    if (!bin) continue;
     const boot = path.join(bin, BOOTSTRAPPER_EXE);
-    if (fs.existsSync(exe)) {
-      return { shipping: exe, bootstrapper: fs.existsSync(boot) ? boot : null, obfuscationId };
-    }
+    return {
+      shipping: path.join(bin, FORTNITE_EXE),
+      bootstrapper: fs.existsSync(boot) ? boot : null,
+      obfuscationId
+    };
   }
   return null;
 }
@@ -190,11 +260,62 @@ function killTree(child) {
   } catch {}
 }
 
-function killStaleEac() {
-  return new Promise((resolve) => {
-    if (process.platform !== 'win32') return resolve();
-    execFile('taskkill', ['/im', 'EasyAntiCheat_EOS.exe', '/f'], () => resolve());
-  });
+function taskkill(names) {
+  if (process.platform !== 'win32') return Promise.resolve();
+  return Promise.all(names.map((n) => new Promise((r) => {
+    execFile('taskkill', ['/im', n, '/f'], () => r());
+  })));
+}
+
+/* ---------------- anti-cheat ---------------- */
+
+function eacDir(target) {
+  if (!target) return null;
+  return path.join(path.dirname(target), 'EasyAntiCheat');
+}
+
+async function killEac() {
+  if (process.platform !== 'win32') return;
+  await taskkill([...EAC_EXES, 'EasyAntiCheat_EOS_Setup.exe']);
+  await new Promise((r) => execFile('sc', ['stop', 'EasyAntiCheat_EOS'], () => r()));
+}
+
+async function disableEac(target) {
+  await killEac();
+  const dir = eacDir(target);
+  const renamed = [];
+  if (!dir) return renamed;
+  for (const name of EAC_EXES) {
+    const src = path.join(dir, name);
+    const bak = src + '.nexel-bak';
+    try {
+      if (fs.existsSync(src) && !fs.existsSync(bak)) {
+        fs.renameSync(src, bak);
+        renamed.push(name);
+      }
+    } catch {}
+  }
+  return renamed;
+}
+
+async function restoreEac(target) {
+  const dir = eacDir(target);
+  const restored = [];
+  if (dir) {
+    for (const name of EAC_EXES) {
+      const bak = path.join(dir, name) + '.nexel-bak';
+      try {
+        if (fs.existsSync(bak)) {
+          fs.renameSync(bak, path.join(dir, name));
+          restored.push(name);
+        }
+      } catch {}
+    }
+  }
+  if (process.platform === 'win32') {
+    await new Promise((r) => execFile('sc', ['start', 'EasyAntiCheat_EOS'], () => r()));
+  }
+  return restored;
 }
 
 /* ---------------- epic: creds ---------------- */
@@ -218,8 +339,6 @@ function epicBasic() {
 
 /* ---------------- epic: dpop ---------------- */
 
-// The account service requires a proof-of-possession JWT on token requests.
-// The key is per-install and only ever used to sign proofs.
 function dpopKeyPath() {
   return path.join(app.getPath('userData'), 'dpop.json');
 }
@@ -287,8 +406,6 @@ function clearEpic() {
 
 let pendingState = null;
 
-// Retries once with the server's dpop-nonce, which the service demands on the
-// first token call of a fresh install.
 async function epicTokenRequest(body) {
   const url = `${EPIC}/account/api/oauth/token`;
   const payload = new URLSearchParams(body).toString();
@@ -373,6 +490,171 @@ async function epicProfile() {
   }
 }
 
+/* ---------------- epic: launcher ---------------- */
+
+const LAUNCHER_EXE = 'EpicGamesLauncher.exe';
+
+function findLauncher() {
+  const candidates = [
+    'C:\\Program Files (x86)\\Epic Games\\Launcher\\Portal\\Binaries\\Win64\\EpicGamesLauncher.exe',
+    'C:\\Program Files\\Epic Games\\Launcher\\Portal\\Binaries\\Win64\\EpicGamesLauncher.exe'
+  ];
+  if (process.env['ProgramFiles(x86)']) {
+    candidates.unshift(path.join(process.env['ProgramFiles(x86)'], 'Epic Games', 'Launcher', 'Portal', 'Binaries', 'Win64', LAUNCHER_EXE));
+  }
+  if (process.env.ProgramFiles) {
+    candidates.push(path.join(process.env.ProgramFiles, 'Epic Games', 'Launcher', 'Portal', 'Binaries', 'Win64', LAUNCHER_EXE));
+  }
+  if (process.env.LOCALAPPDATA) {
+    candidates.push(path.join(process.env.LOCALAPPDATA, 'EpicGamesLauncher', 'Portal', 'Binaries', 'Win64', LAUNCHER_EXE));
+  }
+  for (const c of candidates) {
+    try { if (fs.existsSync(c)) return c; } catch {}
+  }
+  for (const key of [
+    'HKCU\\Software\\Epic Games\\EpicGamesLauncher',
+    'HKLM\\SOFTWARE\\WOW6432Node\\Epic Games\\EpicGamesLauncher'
+  ]) {
+    for (const value of ['LauncherPath', 'AppDataPath']) {
+      try {
+        const out = execFileSync('reg', ['query', key, '/v', value], { encoding: 'utf8', windowsHide: true });
+        const m = out.match(/REG_(?:SZ|EXPAND_SZ)\s+(.+)/);
+        if (!m) continue;
+        let p = m[1].trim().replace(/^"|"$/g, '');
+        if (!/\.exe$/i.test(p)) p = path.join(p, 'Portal', 'Binaries', 'Win64', LAUNCHER_EXE);
+        if (fs.existsSync(p)) return p;
+      } catch {}
+    }
+  }
+  return null;
+}
+
+// Installed if the exe, its data dirs, or the launcher protocol are present.
+// The protocol check alone is enough for shell.openExternal to work.
+function launcherInstalled() {
+  if (process.platform !== 'win32') return false;
+  if (findLauncher()) return true;
+
+  for (const p of [
+    process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'EpicGamesLauncher') : null,
+    'C:\\ProgramData\\Epic\\EpicGamesLauncher',
+    'C:\\ProgramData\\Epic\\UnrealEngineLauncher'
+  ]) {
+    try { if (p && fs.existsSync(p)) return true; } catch {}
+  }
+
+  for (const key of [
+    'HKCU\\Software\\Classes\\com.epicgames.launcher',
+    'HKCR\\com.epicgames.launcher',
+    'HKCU\\Software\\Epic Games\\EpicGamesLauncher',
+    'HKLM\\SOFTWARE\\WOW6432Node\\Epic Games\\EpicGamesLauncher'
+  ]) {
+    try {
+      execFileSync('reg', ['query', key], { encoding: 'utf8', windowsHide: true });
+      return true;
+    } catch {}
+  }
+  return false;
+}
+
+async function openLauncher() {
+  try {
+    await shell.openExternal(DEEP_LINK);
+    return true;
+  } catch {}
+  const exe = findLauncher();
+  if (!exe) return false;
+  spawn(exe, [DEEP_LINK], { detached: true, stdio: 'ignore' }).unref();
+  return true;
+}
+
+function launcherLogPath() {
+  return path.join(process.env.LOCALAPPDATA || '', 'EpicGamesLauncher', 'Saved', 'Logs', 'EpicGamesLauncher.log');
+}
+
+function readGameCommandLines() {
+  return new Promise((resolve) => {
+    if (process.platform !== 'win32') return resolve([]);
+    const filter = GAME_PROCS.map((n) => `Name='${n}'`).join(' OR ');
+    const ps = `Get-CimInstance Win32_Process -Filter "${filter}" | Select-Object -ExpandProperty CommandLine`;
+    execFile('powershell', ['-NoProfile', '-Command', ps], { windowsHide: true, timeout: 8000 }, (err, stdout) => {
+      if (err || !stdout) return resolve([]);
+      resolve(stdout.split(/\r?\n/).map((s) => s.trim()).filter(Boolean));
+    });
+  });
+}
+
+async function captureExchangeCode(timeoutMs = 180_000) {
+  if (process.platform !== 'win32') return null;
+  const logPath = launcherLogPath();
+  let offset = 0;
+  try { offset = fs.statSync(logPath).size; } catch {}
+
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const lines = await readGameCommandLines();
+    for (const line of lines) {
+      const m = line.match(/-AUTH_PASSWORD=([A-Za-z0-9]{16,})/);
+      if (m) return { code: m[1], line };
+    }
+
+    try {
+      const size = fs.statSync(logPath).size;
+      if (size < offset) offset = 0;
+      if (size > offset) {
+        const len = Math.min(size - offset, 1 << 20);
+        const buf = Buffer.alloc(len);
+        const fd = fs.openSync(logPath, 'r');
+        fs.readSync(fd, buf, 0, len, offset);
+        fs.closeSync(fd);
+        offset += len;
+        const m = buf.toString('utf8').replace(/\u0000/g, '').match(/-AUTH_PASSWORD=([A-Za-z0-9]{16,})/);
+        if (m) return { code: m[1], line: '' };
+      }
+    } catch {}
+
+    await new Promise((r) => setTimeout(r, 900));
+  }
+  return null;
+}
+
+let launcherBusy = false;
+
+async function mintCodeViaLauncher() {
+  if (process.platform !== 'win32') return { ok: false, reason: 'NOT_WINDOWS' };
+  if (launcherBusy) return { ok: false, reason: 'BUSY' };
+  if (!launcherInstalled()) return { ok: false, reason: 'LAUNCHER_NOT_FOUND' };
+
+  launcherBusy = true;
+  try {
+    if (!(await openLauncher())) return { ok: false, reason: 'LAUNCHER_NOT_FOUND' };
+    const cap = await captureExchangeCode(150_000);
+    if (!cap) return { ok: false, reason: 'CODE_TIMEOUT' };
+    return { ok: true, code: cap.code };
+  } finally {
+    launcherBusy = false;
+  }
+}
+
+async function killLauncherCopy() {
+  await taskkill(GAME_PROCS);
+  await killEac();
+}
+
+function watchGameExit() {
+  if (gameWatch) clearInterval(gameWatch);
+  let ticks = 0;
+  gameWatch = setInterval(async () => {
+    const lines = await readGameCommandLines();
+    ticks += 1;
+    if (!lines.length && ticks > 3) {
+      clearInterval(gameWatch);
+      gameWatch = null;
+      win?.webContents.send('launch:exit', 0);
+    }
+  }, 4000);
+}
+
 /* ---------------- window ---------------- */
 
 function createWindow() {
@@ -423,9 +705,11 @@ ipcMain.handle('app:cfg:set', (_e, c) => {
   return true;
 });
 
+ipcMain.handle('app:launcher:status', () => ({ installed: launcherInstalled() }));
+
 ipcMain.handle('app:detect', () => {
   const found = findFortnite();
-  if (!found) return { ok: false, reason: 'NOT_FOUND' };
+  if (!found) return { ok: false, reason: 'NOT_FOUND', launcher: launcherInstalled() };
   writeCfg({
     target: found.shipping,
     bootstrapper: found.bootstrapper,
@@ -469,6 +753,16 @@ ipcMain.handle('app:capture', () => new Promise((resolve) => {
   });
 }));
 
+ipcMain.handle('app:eac:disable', async () => {
+  const renamed = await disableEac(readCfg().target);
+  return { ok: true, renamed };
+});
+
+ipcMain.handle('app:eac:restore', async () => {
+  const restored = await restoreEac(readCfg().target);
+  return { ok: true, restored };
+});
+
 /* ---------------- ipc: epic ---------------- */
 
 ipcMain.handle('epic:creds:get', () => epicCreds());
@@ -490,7 +784,15 @@ ipcMain.handle('epic:status', async () => {
   return { linked: true, accountId: prof?.accountId || ep.accountId, displayName: prof?.displayName || '' };
 });
 
-// Opens the login page; the user copies the "code" value back.
+ipcMain.handle('epic:launcher:detect', () => ({ installed: launcherInstalled() }));
+
+ipcMain.handle('epic:launcher', async () => {
+  const r = await mintCodeViaLauncher();
+  if (!r.ok) return r;
+  await killLauncherCopy();
+  return r;
+});
+
 ipcMain.handle('epic:start', async () => {
   const c = epicCreds();
   if (!c.clientId || !c.clientSecret) return { ok: false, reason: 'NO_CLIENT_CREDS' };
@@ -500,13 +802,15 @@ ipcMain.handle('epic:start', async () => {
   return { ok: true, url, state: pendingState };
 });
 
-// Accepts a raw code, or the whole JSON blob the redirect page shows.
 ipcMain.handle('epic:finish', async (_e, raw) => {
   const text = String(raw || '').trim();
   if (!text) return { ok: false, reason: 'NO_CODE' };
   let code = text;
   if (text.startsWith('{')) {
-    try { code = JSON.parse(text).code || ''; } catch {}
+    try {
+      const j = JSON.parse(text);
+      code = j.code || j.authorizationCode || j.exchangeCode || '';
+    } catch {}
   }
   code = code.replace(/^"|"$/g, '').trim();
   if (!code) return { ok: false, reason: 'NO_CODE' };
@@ -573,12 +877,43 @@ ipcMain.handle('app:launch', async (_event, payload) => {
   }
 
   const cfg = readCfg();
-  if (payload && typeof payload === 'object' && payload.mode) {
-    cfg.mode = payload.mode === 'eac' ? 'eac' : 'noeac';
-    writeCfg({ mode: cfg.mode });
+  if (payload && typeof payload === 'object') {
+    if (payload.mode) cfg.mode = payload.mode === 'eac' ? 'eac' : 'noeac';
+    if (typeof payload.disableAc === 'boolean') cfg.disableAc = payload.disableAc;
+    if (typeof payload.viaLauncher === 'boolean') cfg.launchViaLauncher = payload.viaLauncher;
+    writeCfg({ mode: cfg.mode, disableAc: cfg.disableAc, launchViaLauncher: cfg.launchViaLauncher });
   }
+
   const requested = (typeof payload === 'string' ? payload : payload?.target) || cfg.target;
-  if (!requested || !fs.existsSync(requested)) return { ok: false, reason: 'TARGET_MISSING' };
+  const haveTarget = !!requested && fs.existsSync(requested);
+
+  /* ---- launcher route: the launcher resolves the install itself ---- */
+  if (cfg.launchViaLauncher) {
+    if (!launcherInstalled()) return { ok: false, reason: 'LAUNCHER_NOT_FOUND' };
+
+    if (cfg.disableAc) {
+      const renamed = await disableEac(haveTarget ? requested : null);
+      win?.webContents.send('launch:out', renamed.length
+        ? `[ac] eac disabled (${renamed.join(', ')})\n`
+        : '[ac] eac process stopped\n');
+    }
+
+    win?.webContents.send('launch:out', '[launcher] opening epic games launcher\n');
+    if (!(await openLauncher())) return { ok: false, reason: 'LAUNCHER_NOT_FOUND' };
+
+    const cap = await captureExchangeCode(180_000);
+    win?.webContents.send('launch:out', cap
+      ? '[auth] exchange code captured from launcher\n'
+      : '[auth] no exchange code observed - sign-in screen expected\n');
+
+    if (cfg.disableAc) await killEac();
+    if (haveTarget) writeCfg({ target: requested, args: typeof payload === 'object' ? payload?.args ?? cfg.args : cfg.args });
+    watchGameExit();
+    return { ok: true, viaLauncher: true, authed: !!cap };
+  }
+
+  /* ---- direct route ---- */
+  if (!haveTarget) return { ok: false, reason: 'TARGET_MISSING' };
 
   const extra = typeof payload === 'object' && payload ? (payload.args ?? cfg.args) : cfg.args;
 
@@ -611,7 +946,7 @@ ipcMain.handle('app:launch', async (_event, payload) => {
 
   killTree(activeChild);
   activeChild = null;
-  if (cfg.mode === 'noeac') await killStaleEac();
+  if (cfg.disableAc) await disableEac(requested);
 
   const args = buildArgs(cfg, extra, code);
   win?.webContents.send('launch:out', `[spawn] ${target}\n[args] ${args.join(' ') || '(none)'}\n`);
@@ -644,9 +979,12 @@ ipcMain.handle('app:launch', async (_event, payload) => {
   }
 });
 
-ipcMain.handle('app:stop', () => {
+ipcMain.handle('app:stop', async () => {
+  if (gameWatch) { clearInterval(gameWatch); gameWatch = null; }
   killTree(activeChild);
   activeChild = null;
+  await taskkill(GAME_PROCS);
+  await killEac();
   return true;
 });
 
