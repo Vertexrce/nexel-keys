@@ -1,358 +1,192 @@
-<!doctype html>
+]<!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8" />
-<title>Nexel</title>
-<link rel="stylesheet" href="./style.css" />
-<style>
-  :root {
-    --bg: #03060f;
-    --rail: #050a14;
-    --panel: #070d1b;
-    --line: #14243d;
-    --text: #cfe6ff;
-    --dim: #5d7799;
-    --accent: #2fb6ff;
-    --ok: #35d39a;
-    --bad: #ff5f6d;
-  }
-  * { box-sizing: border-box; }
-  html, body {
-    margin: 0; height: 100%;
-    background: var(--bg); color: var(--text);
-    font: 13px/1.5 "Segoe UI", system-ui, sans-serif;
-    overflow: hidden; user-select: none;
-  }
-  body { display: flex; flex-direction: column; }
-
-  #titlebar {
-    height: 38px; flex: 0 0 38px;
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 0 6px 0 16px;
-    border-bottom: 1px solid var(--line);
-    background: var(--rail);
-    -webkit-app-region: drag;
-  }
-  .brand { letter-spacing: .28em; font-size: 11px; text-transform: uppercase; color: var(--accent); }
-  .winbtns { display: flex; gap: 4px; -webkit-app-region: no-drag; }
-  .winbtns button {
-    width: 34px; height: 26px; border: 0; background: transparent;
-    color: var(--dim); cursor: pointer; border-radius: 4px;
-  }
-  .winbtns button:hover { background: #12203a; color: var(--text); }
-  #btn-close:hover { background: var(--bad); color: #fff; }
-
-  #body { flex: 1; display: flex; min-height: 0; }
-
-  #rail {
-    width: 190px; flex: 0 0 190px;
-    border-right: 1px solid var(--line);
-    background: var(--rail);
-    padding: 18px 12px;
-    display: flex; flex-direction: column; gap: 4px;
-  }
-  .nav {
-    padding: 9px 12px; border-radius: 7px; border: 1px solid transparent;
-    background: transparent; color: var(--dim); font: inherit;
-    text-align: left; cursor: pointer; font-weight: 600;
-  }
-  .nav:hover { color: var(--text); background: #0b1526; }
-  .nav.on { color: var(--accent); background: #0b1526; border-color: var(--line); }
-  #rail .spacer { flex: 1; }
-  #who { font-size: 11px; color: var(--dim); padding: 0 12px; word-break: break-all; }
-
-  #content { flex: 1; overflow: auto; padding: 26px 30px 36px; }
-
-  .tab { display: none; }
-  .tab.on { display: block; }
-
-  h1 { margin: 0 0 4px; font-size: 19px; font-weight: 600; }
-  .sub { margin: 0 0 22px; color: var(--dim); font-size: 12px; }
-
-  .card {
-    border: 1px solid var(--line); background: var(--panel);
-    border-radius: 9px; padding: 15px; margin-bottom: 13px;
-  }
-  .card h2 {
-    margin: 0 0 11px; font-size: 10px; letter-spacing: .18em;
-    text-transform: uppercase; color: var(--dim); font-weight: 600;
-  }
-
-  input[type="text"] {
-    width: 100%; padding: 9px 11px;
-    background: #040913; border: 1px solid var(--line);
-    border-radius: 6px; color: var(--text); font: inherit; outline: none;
-  }
-  input[type="text"]:focus { border-color: var(--accent); }
-
-  .row { display: flex; gap: 8px; align-items: center; }
-  .row + .row { margin-top: 9px; }
-
-  button.act {
-    padding: 8px 14px; border-radius: 6px; border: 1px solid var(--line);
-    background: #0b1526; color: var(--text); font: inherit; font-weight: 600;
-    cursor: pointer; white-space: nowrap;
-  }
-  button.act:hover:not(:disabled) { border-color: var(--accent); }
-  button.act:disabled { opacity: .45; cursor: default; }
-
-  #btn-launch {
-    width: 100%; padding: 15px; font-size: 14px; letter-spacing: .08em;
-    text-transform: uppercase;
-    background: linear-gradient(180deg, #1b6fb0, #12456e);
-    border-color: #2b8fd8; color: #eaf7ff;
-  }
-  #btn-launch:hover:not(:disabled) { background: linear-gradient(180deg, #2284cd, #17547f); }
-
-  label.check { display: flex; gap: 9px; align-items: center; cursor: pointer; }
-  label.check input { accent-color: var(--accent); width: 15px; height: 15px; }
-  label.check small { display: block; color: var(--dim); font-size: 11px; }
-
-  #game-path {
-    flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    color: var(--dim); font-size: 12px;
-  }
-
-  #log {
-    margin: 0; height: 190px; overflow: auto; padding: 11px;
-    background: #02050c; border: 1px solid var(--line); border-radius: 7px;
-    font: 11px/1.6 Consolas, monospace; color: #8fb8d8;
-    white-space: pre-wrap; word-break: break-all; user-select: text;
-  }
-
-  .msg { min-height: 16px; font-size: 12px; color: var(--dim); }
-  .msg.bad { color: var(--bad); }
-  .msg.ok { color: var(--ok); }
-
-  .epic-label { font-size: 12px; color: var(--dim); margin-bottom: 8px; }
-
-  #gate { display: none; padding: 40px; max-width: 520px; margin: 0 auto; }
-  #app { display: none; }
-</style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="dark">
+  <title>Nexel Emulator</title>
+  <link rel="stylesheet" href="./style.css">
 </head>
 <body>
-
-<div id="titlebar">
-  <div class="brand">Nexel</div>
-  <div class="winbtns">
-    <button id="btn-min" title="Minimize">&#8211;</button>
-    <button id="btn-close" title="Close">&#10005;</button>
-  </div>
+<div class="window-controls window-controls-floating" aria-label="Window controls">
+  <button type="button" class="window-control" id="btn-minimize" aria-label="Minimize" title="Minimize">−</button>
+  <button type="button" class="window-control close" id="btn-close" aria-label="Close" title="Close">×</button>
 </div>
 
-<section id="gate">
-  <h1>Sign in</h1>
-  <p class="sub">Discord login, then redeem your key.</p>
-  <div class="card">
-    <div class="row"><button class="act" id="btn-login">Continue with Discord</button></div>
-    <div class="row">
-      <input type="text" id="key-input" placeholder="NEXEL-XXXX-XXXX-XXXX" autocomplete="off" />
-      <button class="act" id="btn-redeem">Redeem</button>
-    </div>
-    <div class="row"><div class="msg" id="gate-msg"></div></div>
+<section id="screen-login" class="screen active">
+  <div class="login-card">
+    <img class="login-logo" src="../../assets/icon.png.png" alt="Nexel">
+    <h1>NEXEL<span>EMULATOR</span></h1>
+    <p class="muted">You must login with Discord first. Please click the login button below.</p>
+    <button id="btn-login" class="btn btn-primary">LOGIN WITH DISCORD</button>
+    <p id="login-error" class="error"></p>
   </div>
 </section>
 
-<div id="body">
-  <nav id="rail">
-    <button class="nav on" data-tab="launch">Launch</button>
-    <button class="nav" data-tab="settings">Settings</button>
-    <div class="spacer"></div>
-    <div id="who"></div>
-    <button class="nav" id="btn-signout">Sign out</button>
-  </nav>
-
-  <div id="content">
-
-    <div class="tab on" id="tab-launch">
-      <h1>Fortnite</h1>
-      <p class="sub" id="launch-sub">Ready.</p>
-
-      <div class="card">
-        <div class="row">
-          <label class="check">
-            <input type="checkbox" id="skip-eac" checked />
-            <span>Skip EAC
-              <small>Runs the shipping binary directly — EAC never starts.</small>
-            </span>
-          </label>
-        </div>
-      </div>
-
-      <div class="row"><button class="act" id="btn-launch">Launch</button></div>
-      <div class="row">
-        <button class="act" id="btn-stop">Stop</button>
-        <div class="msg" id="launch-msg"></div>
-      </div>
+<section id="screen-key" class="screen">
+  <div class="login-card">
+    <h1>ACTIVATE<span>LICENSE</span></h1>
+    <p class="muted" id="key-sub">Enter your key to continue.</p>
+    <div class="key-wrap">
+      <input id="key-input" maxlength="29" spellcheck="false" placeholder="NEXEL-XXXXX-XXXXX-XXXXX-XXXXX" autocomplete="off">
     </div>
-
-    <div class="tab" id="tab-settings">
-      <h1>Settings</h1>
-      <p class="sub">Account, install path, output.</p>
-
-      <div class="card">
-        <h2>Epic account</h2>
-        <div id="epic-panel"></div>
-      </div>
-
-      <div class="card">
-        <h2>Install</h2>
-        <div class="row"><span id="game-path">No executable selected</span></div>
-        <div class="row">
-          <button class="act" id="btn-detect">Auto-detect</button>
-          <button class="act" id="btn-pick">Browse</button>
-        </div>
-        <div class="row"><div class="msg" id="game-msg"></div></div>
-      </div>
-
-      <div class="card">
-        <h2>Launcher credentials</h2>
-        <div class="row"><input type="text" id="cred-id" placeholder="client id" /></div>
-        <div class="row"><input type="text" id="cred-secret" placeholder="client secret" /></div>
-        <div class="row"><button class="act" id="btn-creds">Save</button><div class="msg" id="cred-msg"></div></div>
-      </div>
-
-      <div class="card">
-        <h2>Output</h2>
-        <pre id="log"></pre>
-      </div>
-    </div>
-
+    <button id="btn-redeem" class="btn btn-primary">ACTIVATE KEY</button>
+    <p id="key-error" class="error"></p>
   </div>
-</div>
+</section>
+
+<section id="screen-app" class="screen">
+  <div class="topbar">
+    <div class="brand"><img src="../../assets/icon.png.png" alt=""><b>Nexel</b></div>
+    <div class="topnav">
+      <button class="tn active" data-view="home" title="Home">■</button>
+      <button class="tn" data-view="subs" title="Subscriptions">◆</button>
+      <button class="tn" data-view="telemetry" title="Telemetry">▲</button>
+      <button class="tn" data-view="engine" title="Engine">⚙</button>
+    </div>
+    <div class="spacer"></div>
+    <div class="pill" id="license-pill"><i></i><span id="license-text">—</span></div>
+  </div>
+
+  <div class="body">
+    <nav class="sidebar">
+      <button class="sb active" data-view="home"><span>▶</span>Launch</button>
+      <button class="sb" data-view="spoof"><span>◉</span>Spoof</button>
+      <button class="sb" data-view="settings"><span>⚙</span>Settings</button>
+      <div class="sb-user">
+        <img id="avatar" alt="Discord avatar">
+        <div><b id="uname">—</b><small id="uhwid">—</small></div>
+      </div>
+    </nav>
+
+    <main class="main">
+      <div class="view active" id="view-home">
+        <h2 class="big">NEXEL EMULATOR</h2>
+        <p class="muted">v1.0.0 · hypervisor ready</p>
+        <button id="btn-launch" class="btn-launch">LAUNCH</button>
+        <div class="stats">
+          <div class="stat"><small>STATUS</small><b id="st-status">IDLE</b></div>
+          <div class="stat"><small>UPTIME</small><b id="st-uptime">00:00:00</b></div>
+          <div class="stat"><small>SPOOF</small><b id="st-spoof">OFF</b></div>
+        </div>
+      </div>
+
+      <div class="view" id="view-spoof">
+        <h2>HWID SPOOFER</h2>
+        <button id="btn-spoof" class="btn btn-primary">SPOOF ALL</button>
+        <div class="grid" id="spoof-grid"></div>
+      </div>
+
+      <div class="view" id="view-settings">
+        <h2>SETTINGS</h2>
+
+        <div class="card">
+          <div class="row"><div><b>Epic account</b><small>The game needs an Epic login to boot.</small></div></div>
+          <div id="epic-panel"></div>
+        </div>
+
+        <div class="card">
+          <div class="row">
+            <div><b>Epic Games Launcher</b><small id="launcher-path">Checking…</small></div>
+            <span class="tag" id="launcher-tag">…</span>
+          </div>
+          <div class="row">
+            <div><b>Install</b><small id="exe-path">Not set</small></div>
+            <span class="tag" id="ac-tag">UNKNOWN</span>
+          </div>
+          <div class="row">
+            <button class="btn btn-sm" id="btn-detect">AUTO-DETECT</button>
+            <button class="btn btn-sm" id="btn-pick">BROWSE</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="row">
+            <div><b>Launch through Epic Games Launcher</b><small>Opens the launcher and lets it start Fortnite.</small></div>
+            <label class="sw"><input type="checkbox" id="opt-launcher" checked><i></i></label>
+          </div>
+          <div class="row">
+            <div><b>Disable Easy Anti-Cheat</b><small>Stops the EAC service and renames the game's EAC binary before boot.</small></div>
+            <label class="sw"><input type="checkbox" id="opt-noeac" checked><i></i></label>
+          </div>
+          <div class="row">
+            <button class="btn btn-sm" id="btn-eac-off">DISABLE EAC</button>
+            <button class="btn btn-sm" id="btn-eac-on">RESTORE EAC</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="row">
+            <div><b>Launch arguments</b><small>Only used when launching directly.</small></div>
+            <button class="btn btn-sm" id="btn-capture">CAPTURE</button>
+          </div>
+          <div class="row col">
+            <textarea id="args-input" rows="3" spellcheck="false" placeholder="-epicapp=Fortnite -epicenv=Prod ..."></textarea>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="row"><div><b>Auto-spoof on launch</b><small>Randomize identifiers before the game starts.</small></div><label class="sw"><input type="checkbox" id="opt-spoof"><i></i></label></div>
+          <div class="row"><div><b>Console overlay</b><small>Stream process output to telemetry.</small></div><label class="sw"><input type="checkbox" id="opt-console" checked><i></i></label></div>
+          <div class="row"><div><b>Close to tray</b><small>Keep the loader running in the background.</small></div><label class="sw"><input type="checkbox" id="opt-tray"><i></i></label></div>
+        </div>
+
+        <div class="card">
+          <div class="row"><div><b>Launcher credentials</b><small>Epic client id / secret used for the exchange code.</small></div></div>
+          <div class="row"><input id="cred-id" placeholder="client id" spellcheck="false" autocomplete="off"></div>
+          <div class="row"><input id="cred-secret" placeholder="client secret" spellcheck="false" autocomplete="off"></div>
+          <div class="row">
+            <button class="btn btn-sm" id="btn-creds">SAVE</button>
+            <div class="msg" id="cred-msg"></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="row"><div><b>Output</b></div></div>
+          <pre id="log"></pre>
+        </div>
+      </div>
+
+      <div class="view" id="view-subs">
+        <h2>LICENSE VAULT</h2>
+        <div class="card">
+          <div class="row"><div><b>Plan</b><small id="sub-plan">—</small></div></div>
+          <div class="row"><div><b>License key</b><small id="sub-key">—</small></div></div>
+          <div class="row"><div><b>Expires</b><small id="sub-exp">—</small></div></div>
+          <div class="row"><div><b>Time left</b><small id="sub-left">—</small></div></div>
+        </div>
+        <div class="card">
+          <b>Redeem another key</b>
+          <div class="row">
+            <input id="key2" maxlength="29" placeholder="NEXEL-XXXXX-XXXXX-XXXXX-XXXXX" autocomplete="off">
+            <button class="btn btn-sm" id="btn-redeem2">ADD</button>
+          </div>
+          <p id="sub-error" class="error"></p>
+        </div>
+        <button class="btn btn-ghost" id="btn-logout">LOG OUT</button>
+      </div>
+
+      <div class="view" id="view-telemetry">
+        <h2>TELEMETRY</h2>
+        <div class="card"><b>Heartbeat</b><div class="hb" id="hb"></div></div>
+        <div class="card console" id="console"></div>
+      </div>
+
+      <div class="view" id="view-engine">
+        <h2>HYPERVISOR ENGINE</h2>
+        <div class="grid" id="engine-grid"></div>
+      </div>
+    </main>
+  </div>
+
+  <div class="statusbar">
+    <span id="sb-left">Connected</span>
+    <span class="spacer"></span>
+    <span id="sb-right">Nexel Emulator v1</span>
+  </div>
+</section>
 
 <script src="./epic.js"></script>
-<script>
-  const $ = (id) => document.getElementById(id);
-  let sessionCheck = null;
-
-  const log = (t) => { const l = $('log'); l.textContent += t; l.scrollTop = l.scrollHeight; };
-  const setMsg = (el, t, k) => { el.textContent = t || ''; el.className = 'msg' + (k ? ' ' + k : ''); };
-
-  $('btn-min').onclick = () => window.nexel.minimize();
-  $('btn-close').onclick = () => window.nexel.close();
-
-  document.querySelectorAll('.nav[data-tab]').forEach((b) => {
-    b.onclick = () => {
-      document.querySelectorAll('.nav[data-tab]').forEach((n) => n.classList.toggle('on', n === b));
-      document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('on', t.id === 'tab-' + b.dataset.tab));
-    };
-  });
-
-  const REASONS = {
-    NO_SESSION: 'Sign in again.',
-    EXPIRED: 'Key expired — redeem a new one.',
-    KEY_PAUSED: 'Key paused by an admin.',
-    KEY_DELETED: 'Key was deleted.',
-    KEY_REVOKED: 'Key was revoked.',
-    OFFLINE: 'Cannot reach the server.',
-    TARGET_MISSING: 'Set the game path in Settings first.',
-    LAUNCH_FAILED: 'The game refused to start.',
-    NOT_FOUND: 'Fortnite not found — browse for it.',
-    NO_CLIENT_CREDS: 'Enter launcher credentials in Settings.'
-  };
-  const describe = (r) => REASONS[r] || r || 'Unknown error.';
-
-  async function enterApp() {
-    $('gate').style.display = 'none';
-    $('body').style.display = 'flex';
-    const cfg = await window.nexel.cfgGet();
-    $('game-path').textContent = cfg.target || 'No executable selected';
-    $('skip-eac').checked = cfg.mode !== 'eac';
-    const c = await window.nexel.epicCreds();
-    $('cred-id').value = c.clientId || '';
-    $('cred-secret').value = c.clientSecret || '';
-    if (sessionCheck) clearInterval(sessionCheck);
-    sessionCheck = setInterval(async () => {
-      const r = await window.nexel.checkSession();
-      if (r.ok) return;
-      clearInterval(sessionCheck);
-      sessionCheck = null;
-      await window.nexel.logout();
-      $('body').style.display = 'none';
-      $('gate').style.display = 'block';
-      setMsg($('gate-msg'), describe(r.reason), 'bad');
-    }, 30000);
-  }
-
-  $('btn-login').onclick = async () => {
-    setMsg($('gate-msg'), 'Waiting for browser…');
-    const r = await window.nexel.login();
-    if (!r.ok) return setMsg($('gate-msg'), describe(r.reason), 'bad');
-    setMsg($('gate-msg'), '');
-    enterApp();
-  };
-
-  $('btn-redeem').onclick = async () => {
-    const key = $('key-input').value.trim();
-    if (!key) return;
-    setMsg($('gate-msg'), 'Checking key…');
-    const r = await window.nexel.redeem(key);
-    if (!r.ok) return setMsg($('gate-msg'), describe(r.reason), 'bad');
-    $('key-input').value = '';
-    setMsg($('gate-msg'), '');
-    enterApp();
-  };
-
-  $('btn-signout').onclick = async () => {
-    await window.nexel.logout();
-    location.reload();
-  };
-
-  $('btn-detect').onclick = async () => {
-    const r = await window.nexel.detect();
-    if (!r.ok) return setMsg($('game-msg'), describe(r.reason), 'bad');
-    setMsg($('game-msg'), r.hasBootstrapper ? 'Found.' : 'Found — no bootstrapper, EAC mode will use the shipping binary.', 'ok');
-    $('game-path').textContent = r.target;
-  };
-
-  $('btn-pick').onclick = async () => {
-    const p = await window.nexel.pickExe();
-    if (!p) return;
-    $('game-path').textContent = p;
-    setMsg($('game-msg'), '');
-  };
-
-  $('btn-creds').onclick = async () => {
-    await window.nexel.epicCredsSet({ clientId: $('cred-id').value, clientSecret: $('cred-secret').value });
-    setMsg($('cred-msg'), 'Saved.', 'ok');
-  };
-
-  $('skip-eac').onchange = () => window.nexel.cfgSet({ mode: $('skip-eac').checked ? 'noeac' : 'eac' });
-
-  $('btn-launch').onclick = async () => {
-    $('btn-launch').disabled = true;
-    setMsg($('launch-msg'), 'Launching…');
-    $('log').textContent = '';
-    const r = await window.nexel.launch({ mode: $('skip-eac').checked ? 'noeac' : 'eac' });
-    if (!r.ok) {
-      $('btn-launch').disabled = false;
-      return setMsg($('launch-msg'), describe(r.reason), 'bad');
-    }
-    setMsg($('launch-msg'), r.authed ? 'Running.' : 'Running — no Epic login, sign-in screen expected.', r.authed ? 'ok' : 'bad');
-  };
-
-  $('btn-stop').onclick = async () => {
-    await window.nexel.stop();
-    $('btn-launch').disabled = false;
-    setMsg($('launch-msg'), 'Stopped.');
-  };
-
-  window.nexel.onLaunchOut(log);
-  window.nexel.onLaunchExit((code) => {
-    $('btn-launch').disabled = false;
-    setMsg($('launch-msg'), `Exited (${code}).`, code === 0 ? 'ok' : 'bad');
-  });
-
-  (async () => {
-    const r = await window.nexel.restore();
-    if (!r.ok) {
-      $('gate').style.display = 'block';
-      if (r.reason && r.reason !== 'NO_SESSION') setMsg($('gate-msg'), describe(r.reason), 'bad');
-      return;
-    }
-    enterApp();
-  })();
-</script>
+<script type="module" src="./app.js"></script>
 </body>
 </html>
