@@ -1,8 +1,7 @@
-
 const $ = (s) => document.querySelector(s);
 const API = await window.nexel.apiBase();
 
-let state = { token: null, user: null, license: null, hwid: null, running: false, tick: 0, uptime: 0 };
+let state = { token: null, user: null, license: null, hwid: null, running: false, tick: 0, uptime: 0, launcher: false };
 let lastLicenseBlockReason = null;
 let sessionCheckRunning = false;
 
@@ -48,6 +47,12 @@ function log(msg) {
   d.textContent = `[${t}] ${msg}`;
   el.appendChild(d);
   el.scrollTop = el.scrollHeight;
+
+  const pane = $('#log');
+  if (pane) {
+    pane.textContent += `[${t}] ${msg}\n`;
+    pane.scrollTop = pane.scrollHeight;
+  }
 }
 
 /* ---------- license ---------- */
@@ -91,7 +96,7 @@ function applySession(data) {
   $('#uhwid').textContent = (state.hwid || '').slice(0, 12) + '…';
   $('#avatar').src = data.user.avatar
     ? `https://cdn.discordapp.com/avatars/${data.user.id}/${data.user.avatar}.png`
-    : '../../assets/icon.png';
+    : '../../assets/icon.png.png';
   renderLicense();
   show('screen-app');
   openView('home');
@@ -124,10 +129,60 @@ function showLicensePage(data, expired = false, notice = null) {
   $('#key-input').focus();
 }
 
+/* ---------- target / anti-cheat ---------- */
+function paintTarget(p) {
+  if (!p) {
+    $('#exe-path').textContent = state.launcher ? 'Handled by Epic Games Launcher' : 'Not set';
+    $('#ac-tag').textContent = state.launcher ? 'LAUNCHER' : 'UNKNOWN';
+    $('#ac-tag').classList.toggle('on', state.launcher);
+    return;
+  }
+  $('#exe-path').textContent = p;
+  const base = p.split(/[\\/]/).pop().toLowerCase();
+  if (/fortniteclient-win64-shipping\.exe$/.test(base)) {
+    $('#ac-tag').textContent = 'DISABLED';
+    $('#ac-tag').classList.add('on');
+  } else if (/_eac(_eos)?\.exe$/.test(base) || base === 'fortnitelauncher.exe') {
+    $('#ac-tag').textContent = 'AUTO-BYPASS';
+    $('#ac-tag').classList.remove('on');
+  } else {
+    $('#ac-tag').textContent = 'N/A';
+    $('#ac-tag').classList.remove('on');
+  }
+}
+
 /* ---------- boot ---------- */
 (async () => {
   state.hwid = await window.nexel.hwid();
   $('#uhwid').textContent = state.hwid.slice(0, 12) + '…';
+
+  const launcher = await window.nexel.launcherStatus();
+  state.launcher = launcher.installed;
+  $('#launcher-tag').textContent = launcher.installed ? 'FOUND' : 'NOT FOUND';
+  $('#launcher-tag').classList.toggle('on', launcher.installed);
+  $('#launcher-path').textContent = launcher.installed
+    ? 'Launch will open it and let it start Fortnite.'
+    : 'Not installed — browse for the executable instead.';
+
+  const cfg = await window.nexel.cfgGet();
+  if (launcher.installed) $('#opt-launcher').checked = cfg.launchViaLauncher !== false;
+  else $('#opt-launcher').checked = false;
+  $('#opt-noeac').checked = cfg.disableAc !== false;
+  paintTarget(cfg.target);
+  $('#args-input').value = cfg.args || '';
+
+  const creds = await window.nexel.epicCreds();
+  $('#cred-id').value = creds.clientId || '';
+  $('#cred-secret').value = creds.clientSecret || '';
+
+  window.nexel.onLaunchOut(d => { if ($('#opt-console').checked) log(d.trimEnd()); });
+  window.nexel.onLaunchExit(code => {
+    state.running = false;
+    $('#btn-launch').classList.remove('running');
+    $('#btn-launch').textContent = 'LAUNCH';
+    $('#st-status').textContent = 'IDLE';
+    log(`process exited (${code})`);
+  });
 
   const r = await window.nexel.restore();
   if (r.ok) {
@@ -235,7 +290,60 @@ $('#btn-spoof').onclick = () => {
 /* ---------- settings ---------- */
 $('#btn-pick').onclick = async () => {
   const p = await window.nexel.pickExe();
-  if (p) { $('#exe-path').textContent = p; log('target set: ' + p); }
+  if (!p) return;
+  paintTarget(p);
+  log('target set: ' + p);
+};
+
+$('#btn-detect').onclick = async () => {
+  const r = await window.nexel.detect();
+  if (!r.ok) {
+    log(r.launcher
+      ? 'install path not found — launcher mode will still work'
+      : 'Fortnite not found — browse to it manually');
+    paintTarget(null);
+    return;
+  }
+  paintTarget(r.target);
+  log('detected: ' + r.target);
+};
+
+$('#btn-capture').onclick = async () => {
+  const r = await window.nexel.captureArgs();
+  if (!r.ok) {
+    log(r.reason === 'NOT_RUNNING' ? 'start Fortnite through Epic first, then capture' : 'could not read command line');
+    return;
+  }
+  $('#args-input').value = r.args;
+  await window.nexel.cfgSet({ args: r.args });
+  log('captured launch arguments');
+};
+
+$('#args-input').onchange = () => window.nexel.cfgSet({ args: $('#args-input').value });
+
+$('#opt-launcher').onchange = () =>
+  window.nexel.cfgSet({ launchViaLauncher: $('#opt-launcher').checked });
+
+$('#opt-noeac').onchange = () =>
+  window.nexel.cfgSet({ disableAc: $('#opt-noeac').checked });
+
+$('#btn-eac-off').onclick = async () => {
+  const r = await window.nexel.eacDisable();
+  log(r.renamed.length ? `eac disabled (${r.renamed.join(', ')})` : 'eac stopped');
+};
+
+$('#btn-eac-on').onclick = async () => {
+  const r = await window.nexel.eacRestore();
+  log(r.restored.length ? `eac restored (${r.restored.join(', ')})` : 'eac service started');
+};
+
+$('#btn-creds').onclick = async () => {
+  await window.nexel.epicCredsSet({
+    clientId: $('#cred-id').value.trim(),
+    clientSecret: $('#cred-secret').value.trim()
+  });
+  $('#cred-msg').textContent = 'Saved.';
+  $('#cred-msg').className = 'msg ok';
 };
 
 /* ---------- launch ---------- */
@@ -247,6 +355,17 @@ $('#btn-launch').onclick = async () => {
     $('#btn-launch').textContent = 'LAUNCH';
     $('#st-status').textContent = 'IDLE';
     log('session closed');
+    return;
+  }
+
+  const viaLauncher = $('#opt-launcher').checked && state.launcher;
+  const rawTarget = $('#exe-path').textContent;
+  const haveTarget = rawTarget !== 'Not set' && rawTarget !== 'Handled by Epic Games Launcher';
+
+  if (!viaLauncher && !haveTarget) {
+    log(state.launcher
+      ? 'enable launcher mode or browse for the executable'
+      : 'Epic Games Launcher not found — browse for FortniteClient-Win64-Shipping.exe');
     return;
   }
 
@@ -279,28 +398,39 @@ $('#btn-launch').onclick = async () => {
   $('#btn-launch').classList.add('running');
   $('#btn-launch').textContent = 'STOP';
   $('#st-status').textContent = 'RUNNING';
+  $('#log').textContent = '';
   log('initializing hypervisor…');
 
   if ($('#opt-spoof').checked) $('#btn-spoof').click();
 
-  const target = $('#exe-path').textContent;
-  if (target !== 'Not set') {
-    const r = await window.nexel.launch(target);
-    if (!r.ok) {
-      state.running = false;
-      $('#btn-launch').classList.remove('running');
-      $('#btn-launch').textContent = 'LAUNCH';
-      $('#st-status').textContent = 'IDLE';
-      if (['KEY_PAUSED', 'KEY_DELETED', 'KEY_REVOKED'].includes(r.reason)) {
-        lastLicenseBlockReason = r.reason;
-        showLicensePage({ token: state.token, user: state.user, license: state.license }, false, licenseBlockMessage(r.reason));
-      }
-      log(r.reason === 'TARGET_MISSING' ? 'target executable not found' : `launch blocked: ${r.reason}`);
-      return;
+  const r = await window.nexel.launch({
+    target: haveTarget ? rawTarget : null,
+    args: $('#args-input').value,
+    viaLauncher,
+    disableAc: $('#opt-noeac').checked
+  });
+
+  if (!r.ok) {
+    state.running = false;
+    $('#btn-launch').classList.remove('running');
+    $('#btn-launch').textContent = 'LAUNCH';
+    $('#st-status').textContent = 'IDLE';
+    if (['KEY_PAUSED', 'KEY_DELETED', 'KEY_REVOKED'].includes(r.reason)) {
+      lastLicenseBlockReason = r.reason;
+      showLicensePage({ token: state.token, user: state.user, license: state.license }, false, licenseBlockMessage(r.reason));
     }
-    log('spawned target');
+    log(r.reason === 'LAUNCHER_NOT_FOUND'
+      ? 'epic games launcher not found'
+      : r.reason === 'TARGET_MISSING' ? 'target executable not found' : `launch blocked: ${r.reason}`);
+    return;
+  }
+
+  if (r.viaLauncher) {
+    log(r.authed
+      ? 'running through the epic games launcher'
+      : 'running through the epic games launcher — sign-in screen expected');
   } else {
-    log('no target set, loader-only mode');
+    log('spawned target');
   }
 };
 
