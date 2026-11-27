@@ -14,10 +14,8 @@ try {
 }
 const API = String(config.api || '').replace(/\/$/, '');
 const EPIC = String(config.epic?.base || 'https://account-public-service-prod.ol.epicgames.com').replace(/\/$/, '');
-const EPIC_CLIENT = config.epic?.clientId || '';
-const EPIC_SECRET = config.epic?.clientSecret || '';
-const EPIC_DEPLOYMENT = config.epic?.deploymentId || '';
-const EPIC_BASIC = Buffer.from(`${EPIC_CLIENT}:${EPIC_SECRET}`).toString('base64');
+const EPIC_DEFAULT_ID = config.epic?.clientId || '';
+const EPIC_DEFAULT_SECRET = config.epic?.clientSecret || '';
 const OAUTH_PORT = 47823;
 
 let win;
@@ -70,8 +68,6 @@ function getHwid() {
 const FORTNITE_EXE = 'FortniteClient-Win64-Shipping.exe';
 const BOOTSTRAPPER_EXE = 'FortniteBootstrapper.exe';
 
-// Anything that boots the EAC chain. All of these get collapsed to the plain
-// shipping binary when the user picks the no-EAC launch mode.
 const EAC_WRAPPERS = [
   'fortniteclient-win64-shipping_eac_eos.exe',
   'fortniteclient-win64-shipping_eac.exe',
@@ -79,9 +75,8 @@ const EAC_WRAPPERS = [
   'fortnitebootstrapper.exe'
 ];
 
-// Fortnite refuses to boot without -EpicPortal: the EOS layer reads it as the
-// "launched by a real launcher" signal. -fromfl / -caldera / -startup are
-// launcher-minted and only belong on the EAC path.
+// -EpicPortal is the "launched by a launcher" signal the EOS layer reads.
+// Without it the game stops with the launcher-check popup before booting.
 const BASE_ARGS = [
   '-epicapp=Fortnite',
   '-epicenv=Prod',
@@ -121,7 +116,6 @@ function writeCfg(c) {
   try { fs.writeFileSync(cfgPath(), JSON.stringify(next)); } catch {}
 }
 
-// noeac: collapse any wrapper to the plain shipping binary beside it.
 function stripEac(target) {
   const base = path.basename(target).toLowerCase();
   if (!EAC_WRAPPERS.includes(base)) return { target, swapped: false };
@@ -130,10 +124,8 @@ function stripEac(target) {
   return { target, swapped: false };
 }
 
-// eac: walk up to the bootstrapper so the full launcher chain runs.
 function toBootstrapper(target) {
-  const dir = path.dirname(target);
-  const candidate = path.join(dir, BOOTSTRAPPER_EXE);
+  const candidate = path.join(path.dirname(target), BOOTSTRAPPER_EXE);
   if (fs.existsSync(candidate)) return candidate;
   return target;
 }
@@ -146,8 +138,6 @@ function manifestDir() {
   return 'C:\\ProgramData\\Epic\\EpicGamesLauncher\\Data\\Manifests';
 }
 
-// -obfuscationid rotates per build; it is only available from the installed
-// manifest's LaunchCommand, so read it instead of hardcoding it.
 function readManifestInfo(appName) {
   let install = null;
   let obfuscationId = '';
@@ -200,8 +190,6 @@ function killTree(child) {
   } catch {}
 }
 
-// A stale service from a previous run keeps EAC alive even when the wrapper
-// never started. Kill it before a no-EAC launch so the process really is absent.
 function killStaleEac() {
   return new Promise((resolve) => {
     if (process.platform !== 'win32') return resolve();
@@ -209,7 +197,68 @@ function killStaleEac() {
   });
 }
 
-/* ---------------- epic account ---------------- */
+/* ---------------- epic: creds ---------------- */
+
+function credsPath() {
+  return path.join(app.getPath('userData'), 'epic-creds.json');
+}
+
+function epicCreds() {
+  try {
+    const c = JSON.parse(fs.readFileSync(credsPath(), 'utf8'));
+    if (c.clientId && c.clientSecret) return c;
+  } catch {}
+  return { clientId: EPIC_DEFAULT_ID, clientSecret: EPIC_DEFAULT_SECRET };
+}
+
+function epicBasic() {
+  const c = epicCreds();
+  return Buffer.from(`${c.clientId}:${c.clientSecret}`).toString('base64');
+}
+
+/* ---------------- epic: dpop ---------------- */
+
+// The account service requires a proof-of-possession JWT on token requests.
+// The key is per-install and only ever used to sign proofs.
+function dpopKeyPath() {
+  return path.join(app.getPath('userData'), 'dpop.json');
+}
+
+let dpopCache = null;
+
+function dpopKeys() {
+  if (dpopCache) return dpopCache;
+  try {
+    const stored = JSON.parse(fs.readFileSync(dpopKeyPath(), 'utf8'));
+    dpopCache = {
+      privateKey: crypto.createPrivateKey({ key: stored, format: 'jwk' }),
+      jwk: { kty: stored.kty, crv: stored.crv, x: stored.x, y: stored.y }
+    };
+    return dpopCache;
+  } catch {}
+  const { privateKey, publicKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'P-256' });
+  const jwk = publicKey.export({ format: 'jwk' });
+  fs.writeFileSync(dpopKeyPath(), JSON.stringify(privateKey.export({ format: 'jwk' })));
+  dpopCache = { privateKey, jwk: { kty: jwk.kty, crv: jwk.crv, x: jwk.x, y: jwk.y } };
+  return dpopCache;
+}
+
+function dpopProof(method, url, nonce) {
+  const { privateKey, jwk } = dpopKeys();
+  const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
+  const claims = {
+    htu: url.split('?')[0],
+    htm: method.toUpperCase(),
+    jti: crypto.randomUUID(),
+    iat: Math.floor(Date.now() / 1000)
+  };
+  if (nonce) claims.nonce = nonce;
+  const input = `${b64({ typ: 'dpop+jwt', alg: 'ES256', jwk })}.${b64(claims)}`;
+  const sig = crypto.sign('sha256', Buffer.from(input), { key: privateKey, dsaEncoding: 'ieee-p1363' });
+  return `${input}.${sig.toString('base64url')}`;
+}
+
+/* ---------------- epic: account ---------------- */
 
 function epicPath() {
   return path.join(app.getPath('userData'), 'epic.bin');
@@ -236,24 +285,59 @@ function clearEpic() {
   try { fs.unlinkSync(epicPath()); } catch {}
 }
 
-let epicPoller = null;
+let pendingState = null;
 
+// Retries once with the server's dpop-nonce, which the service demands on the
+// first token call of a fresh install.
 async function epicTokenRequest(body) {
-  const r = await fetch(`${EPIC}/account/api/oauth/token`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Basic ${EPIC_BASIC}`,
-      'Content-Type': 'application/x-www-form-urlencoded'
-    },
-    body: new URLSearchParams(body).toString()
-  });
-  const data = await r.json();
-  if (!r.ok) throw new Error(data.errorCode || data.error || 'TOKEN_FAILED');
+  const url = `${EPIC}/account/api/oauth/token`;
+  const payload = new URLSearchParams(body).toString();
+
+  const attempt = async (nonce) => {
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Basic ${epicBasic()}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+        DPoP: dpopProof('POST', url, nonce)
+      },
+      body: payload
+    });
+    const data = await r.json().catch(() => ({}));
+    return { r, data };
+  };
+
+  let { r, data } = await attempt(null);
+  const freshNonce = r.headers.get('dpop-nonce');
+  if (!r.ok && freshNonce && data.errorCode === 'errors.com.epicgames.common.dpop.nonce_invalid') {
+    ({ r, data } = await attempt(freshNonce));
+  }
+  if (!r.ok) {
+    const err = new Error(data.errorCode || data.error || 'TOKEN_FAILED');
+    err.detail = data.errorMessage || data.message || '';
+    throw err;
+  }
   return data;
 }
 
-// Refresh the eg1 bearer, persisting the rotated refresh token.
-async function ensureEg1() {
+async function epicAuthFetch(pathname, opts = {}) {
+  const ep = readEpic();
+  if (!ep?.accessToken) throw new Error('EPIC_NOT_LINKED');
+  const url = `${EPIC}${pathname}`;
+  const scheme = ep.tokenType === 'dpop' ? 'DPoP' : 'Bearer';
+  const r = await fetch(url, {
+    method: opts.method || 'GET',
+    headers: {
+      Authorization: `${scheme} ${ep.accessToken}`,
+      DPoP: dpopProof(opts.method || 'GET', url)
+    }
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.errorCode || 'EPIC_REQUEST_FAILED');
+  return data;
+}
+
+async function ensureAccessToken() {
   const ep = readEpic();
   if (!ep?.refreshToken) throw new Error('EPIC_NOT_LINKED');
   const data = await epicTokenRequest({
@@ -261,18 +345,19 @@ async function ensureEg1() {
     refresh_token: ep.refreshToken,
     token_type: 'eg1'
   });
-  saveEpic({ ...ep, refreshToken: data.refresh_token, accessToken: data.access_token });
+  saveEpic({
+    ...ep,
+    accessToken: data.access_token,
+    refreshToken: data.refresh_token,
+    tokenType: String(data.token_type || '').toLowerCase() === 'dpop' ? 'dpop' : 'bearer'
+  });
   return data.access_token;
 }
 
-// One-time exchange code consumed by the game's login. ~3 minute life.
 async function mintExchangeCode() {
-  const eg1 = await ensureEg1();
-  const r = await fetch(`${EPIC}/account/api/oauth/exchange?token_type=eg1`, {
-    headers: { Authorization: `Bearer ${eg1}` }
-  });
-  const data = await r.json();
-  if (!r.ok || !data.code) throw new Error(data.errorCode || 'EXCHANGE_FAILED');
+  await ensureAccessToken();
+  const data = await epicAuthFetch('/account/api/oauth/exchange?token_type=eg1');
+  if (!data.code) throw new Error('EXCHANGE_FAILED');
   return data.code;
 }
 
@@ -280,11 +365,8 @@ async function epicProfile() {
   const ep = readEpic();
   if (!ep?.accountId) return null;
   try {
-    const eg1 = await ensureEg1();
-    const r = await fetch(`${EPIC}/account/api/public/account/${ep.accountId}`, {
-      headers: { Authorization: `Bearer ${eg1}` }
-    });
-    const data = await r.json();
+    await ensureAccessToken();
+    const data = await epicAuthFetch(`/account/api/public/account/${ep.accountId}`);
     return { accountId: ep.accountId, displayName: data.displayName || ep.displayName || '' };
   } catch {
     return { accountId: ep.accountId, displayName: ep.displayName || '' };
@@ -295,10 +377,10 @@ async function epicProfile() {
 
 function createWindow() {
   win = new BrowserWindow({
-    width: 1280,
-    height: 800,
-    minWidth: 1100,
-    minHeight: 700,
+    width: 1180,
+    height: 760,
+    minWidth: 1000,
+    minHeight: 640,
     frame: false,
     titleBarStyle: 'hidden',
     autoHideMenuBar: true,
@@ -364,8 +446,6 @@ ipcMain.handle('app:pick', async () => {
   return picked;
 });
 
-// Pull the real command line off a game the Epic launcher started. Useful as a
-// fallback when no Epic account is linked.
 ipcMain.handle('app:capture', () => new Promise((resolve) => {
   const ps = [
     'Get-CimInstance Win32_Process -Filter',
@@ -389,7 +469,19 @@ ipcMain.handle('app:capture', () => new Promise((resolve) => {
   });
 }));
 
-/* ---------------- ipc: epic linking ---------------- */
+/* ---------------- ipc: epic ---------------- */
+
+ipcMain.handle('epic:creds:get', () => epicCreds());
+
+ipcMain.handle('epic:creds:set', (_e, c) => {
+  try {
+    fs.writeFileSync(credsPath(), JSON.stringify({
+      clientId: String(c?.clientId || '').trim(),
+      clientSecret: String(c?.clientSecret || '').trim()
+    }));
+  } catch {}
+  return true;
+});
 
 ipcMain.handle('epic:status', async () => {
   const ep = readEpic();
@@ -398,77 +490,51 @@ ipcMain.handle('epic:status', async () => {
   return { linked: true, accountId: prof?.accountId || ep.accountId, displayName: prof?.displayName || '' };
 });
 
+// Opens the login page; the user copies the "code" value back.
 ipcMain.handle('epic:start', async () => {
-  if (!EPIC_CLIENT || !EPIC_SECRET) return { ok: false, reason: 'NO_CLIENT_CREDS' };
+  const c = epicCreds();
+  if (!c.clientId || !c.clientSecret) return { ok: false, reason: 'NO_CLIENT_CREDS' };
+  pendingState = crypto.randomBytes(8).toString('hex');
+  const url = `https://www.epicgames.com/id/api/redirect?clientId=${encodeURIComponent(c.clientId)}&responseType=code`;
+  await shell.openExternal(url);
+  return { ok: true, url, state: pendingState };
+});
+
+// Accepts a raw code, or the whole JSON blob the redirect page shows.
+ipcMain.handle('epic:finish', async (_e, raw) => {
+  const text = String(raw || '').trim();
+  if (!text) return { ok: false, reason: 'NO_CODE' };
+  let code = text;
+  if (text.startsWith('{')) {
+    try { code = JSON.parse(text).code || ''; } catch {}
+  }
+  code = code.replace(/^"|"$/g, '').trim();
+  if (!code) return { ok: false, reason: 'NO_CODE' };
+
   try {
-    const r = await fetch(`${EPIC}/account/api/oauth/deviceAuthorization`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Basic ${EPIC_BASIC}`,
-        'Content-Type': 'application/x-www-form-urlencoded'
-      },
-      body: new URLSearchParams({ prompt: 'login' }).toString()
+    const data = await epicTokenRequest({
+      grant_type: 'authorization_code',
+      code,
+      token_type: 'eg1'
     });
-    const data = await r.json();
-    if (!r.ok || !data.device_code) return { ok: false, reason: data.errorCode || 'DEVICE_FAILED' };
-
-    const interval = Math.max(Number(data.interval) || 5, 2) * 1000;
-    const deadline = Date.now() + (Number(data.expires_in) || 300) * 1000;
-
-    if (epicPoller) clearTimeout(epicPoller);
-    const poll = async () => {
-      if (Date.now() > deadline) {
-        win?.webContents.send('epic:state', { state: 'expired' });
-        return;
-      }
-      try {
-        const t = await epicTokenRequest({
-          grant_type: 'device_code',
-          device_code: data.device_code,
-          token_type: 'eg1'
-        });
-        const accountId = t.account_id;
-        // Upgrade to a persistent device auth so the user links once, not per session.
-        let refreshToken = t.refresh_token;
-        try {
-          const d = await epicTokenRequest({
-            grant_type: 'device_auth',
-            account_id: accountId,
-            device_id: t.device_id || crypto.randomUUID(),
-            secret: t.device_secret || t.secret
-          });
-          if (d.refresh_token) refreshToken = d.refresh_token;
-        } catch {}
-        saveEpic({ accountId, refreshToken, accessToken: t.access_token });
-        const prof = await epicProfile();
-        win?.webContents.send('epic:state', {
-          state: 'linked',
-          accountId,
-          displayName: prof?.displayName || ''
-        });
-      } catch (e) {
-        const msg = String(e.message || e);
-        if (msg === 'slow_down') return void (epicPoller = setTimeout(poll, interval * 2));
-        if (msg === 'authorization_pending') return void (epicPoller = setTimeout(poll, interval));
-        win?.webContents.send('epic:state', { state: 'error', reason: msg });
-      }
-    };
-    epicPoller = setTimeout(poll, interval);
-
-    return {
-      ok: true,
-      userCode: data.user_code,
-      verificationUri: data.verification_uri_complete || data.verification_uri,
-      expiresIn: data.expires_in
-    };
+    if (!data.account_id) return { ok: false, reason: 'NO_ACCOUNT' };
+    saveEpic({
+      accountId: data.account_id,
+      accessToken: data.access_token,
+      refreshToken: data.refresh_token,
+      tokenType: String(data.token_type || '').toLowerCase() === 'dpop' ? 'dpop' : 'bearer',
+      displayName: data.displayName || ''
+    });
+    const prof = await epicProfile();
+    if (prof?.displayName) saveEpic({ ...readEpic(), displayName: prof.displayName });
+    pendingState = null;
+    return { ok: true, accountId: data.account_id, displayName: prof?.displayName || '' };
   } catch (e) {
-    return { ok: false, reason: String(e.message || e) };
+    return { ok: false, reason: e.message || 'AUTH_FAILED', detail: e.detail || '' };
   }
 });
 
 ipcMain.handle('epic:logout', () => {
-  if (epicPoller) clearTimeout(epicPoller);
-  epicPoller = null;
   clearEpic();
   return true;
 });
@@ -479,11 +545,7 @@ function buildArgs(cfg, extra, code) {
   const args = [...BASE_ARGS];
   if (cfg.obfuscationId) args.push(`-obfuscationid=${cfg.obfuscationId}`);
   if (code) {
-    args.push(
-      '-AUTH_LOGIN=unused',
-      `-AUTH_PASSWORD=${code}`,
-      '-AUTH_TYPE=exchangecode'
-    );
+    args.push('-AUTH_LOGIN=unused', `-AUTH_PASSWORD=${code}`, '-AUTH_TYPE=exchangecode');
     const ep = readEpic();
     if (ep?.displayName) args.push(`-epicusername="${ep.displayName}"`);
     if (ep?.accountId) args.push(`-epicuserid=${ep.accountId}`);
@@ -491,7 +553,6 @@ function buildArgs(cfg, extra, code) {
   args.push(...splitArgs(extra));
   if (cfg.mode === 'noeac') {
     args.push('-noeac');
-    // Launcher-minted, and meaningless without the EAC chain.
     if (!args.some(a => a.startsWith('-fromfl'))) args.push('-fromfl=be');
   }
   return args;
@@ -536,7 +597,6 @@ ipcMain.handle('app:launch', async (_event, payload) => {
     return err ? { ok: false, reason: 'LAUNCH_FAILED', detail: err } : { ok: true, wrapped: true };
   }
 
-  // Auth is required: without it the game shows the launcher-check popup.
   let code = null;
   if (readEpic()?.refreshToken) {
     try {
@@ -546,7 +606,7 @@ ipcMain.handle('app:launch', async (_event, payload) => {
     }
   }
   if (!code) {
-    win?.webContents.send('launch:out', '[auth] no Epic account linked - falling back to captured args\n');
+    win?.webContents.send('launch:out', '[auth] no exchange code - sign-in screen expected\n');
   }
 
   killTree(activeChild);
