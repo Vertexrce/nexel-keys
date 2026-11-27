@@ -124,10 +124,45 @@ function showLicensePage(data, expired = false, notice = null) {
   $('#key-input').focus();
 }
 
+/* ---------- target / anti-cheat ---------- */
+function paintTarget(p) {
+  if (!p) {
+    $('#exe-path').textContent = 'Not set';
+    $('#ac-tag').textContent = 'UNKNOWN';
+    $('#ac-tag').classList.remove('on');
+    return;
+  }
+  $('#exe-path').textContent = p;
+  const base = p.split(/[\\/]/).pop().toLowerCase();
+  if (/fortniteclient-win64-shipping\.exe$/.test(base)) {
+    $('#ac-tag').textContent = 'DISABLED';
+    $('#ac-tag').classList.add('on');
+  } else if (/_eac(_eos)?\.exe$/.test(base) || base === 'fortnitelauncher.exe') {
+    $('#ac-tag').textContent = 'AUTO-BYPASS';
+    $('#ac-tag').classList.remove('on');
+  } else {
+    $('#ac-tag').textContent = 'N/A';
+    $('#ac-tag').classList.remove('on');
+  }
+}
+
 /* ---------- boot ---------- */
 (async () => {
   state.hwid = await window.nexel.hwid();
   $('#uhwid').textContent = state.hwid.slice(0, 12) + '…';
+
+  const cfg = await window.nexel.cfgGet();
+  paintTarget(cfg.target);
+  $('#args-input').value = cfg.args || '';
+
+  window.nexel.onLaunchOut(d => { if ($('#opt-console').checked) log(d.trimEnd()); });
+  window.nexel.onLaunchExit(code => {
+    state.running = false;
+    $('#btn-launch').classList.remove('running');
+    $('#btn-launch').textContent = 'LAUNCH';
+    $('#st-status').textContent = 'IDLE';
+    log(`process exited (${code})`);
+  });
 
   const r = await window.nexel.restore();
   if (r.ok) {
@@ -235,8 +270,30 @@ $('#btn-spoof').onclick = () => {
 /* ---------- settings ---------- */
 $('#btn-pick').onclick = async () => {
   const p = await window.nexel.pickExe();
-  if (p) { $('#exe-path').textContent = p; log('target set: ' + p); }
+  if (!p) return;
+  paintTarget(p);
+  log('target set: ' + p);
 };
+
+$('#btn-detect').onclick = async () => {
+  const r = await window.nexel.detect();
+  if (!r.ok) { log('Fortnite not found — browse to it manually'); return; }
+  paintTarget(r.target);
+  log('detected: ' + r.target);
+};
+
+$('#btn-capture').onclick = async () => {
+  const r = await window.nexel.captureArgs();
+  if (!r.ok) {
+    log(r.reason === 'NOT_RUNNING' ? 'start Fortnite through Epic first, then capture' : 'could not read command line');
+    return;
+  }
+  $('#args-input').value = r.args;
+  await window.nexel.cfgSet({ args: r.args });
+  log('captured launch arguments');
+};
+
+$('#args-input').onchange = () => window.nexel.cfgSet({ args: $('#args-input').value });
 
 /* ---------- launch ---------- */
 $('#btn-launch').onclick = async () => {
@@ -286,7 +343,8 @@ $('#btn-launch').onclick = async () => {
 
   const target = $('#exe-path').textContent;
   if (target !== 'Not set') {
-    const r = await window.nexel.launch(target);
+    const args = $('#args-input').value;
+    const r = await window.nexel.launch({ target, args });
     if (!r.ok) {
       state.running = false;
       $('#btn-launch').classList.remove('running');
