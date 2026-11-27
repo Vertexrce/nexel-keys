@@ -6,7 +6,8 @@
   "author": "Nexel",
   "scripts": {
     "start": "electron .",
-    "dist": "electron-builder --win nsis"
+    "clean": "node clean.js",
+    "dist": "node clean.js && electron-builder --win portable"
   },
   "dependencies": {
     "node-machine-id": "^1.1.12"
