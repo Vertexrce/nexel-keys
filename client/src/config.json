@@ -1,3 +1,9 @@
 {
-  "api": "https://nexel-keys-production.up.railway.app"
+  "api": "https://nexel-keys-production.up.railway.app",
+  "epic": {
+    "base": "https://account-public-service-prod.ol.epicgames.com",
+    "clientId": "34a02cf8f4414e29b15921876da36f9a",
+    "clientSecret": "daafbccc737745039dffe53d94fc76cf",
+    "deploymentId": "62a9473a2dca46b29ccf17577fcf42d7"
+  }
 }
