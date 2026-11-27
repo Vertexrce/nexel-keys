@@ -80,6 +80,10 @@
         <h2>SETTINGS</h2>
         <div class="card">
           <div class="row"><div><b>Target executable</b><small id="exe-path">Not set</small></div><button class="btn btn-sm" id="btn-pick">BROWSE</button></div>
+          <div class="row"><div><b>Auto-detect Fortnite</b><small>Targets the no-EAC binary automatically</small></div><button class="btn btn-sm" id="btn-detect">DETECT</button></div>
+          <div class="row"><div><b>Anti-cheat</b><small id="ac-note">EAC is skipped on launch</small></div><span class="tag" id="ac-tag">UNKNOWN</span></div>
+          <div class="row col"><div><b>Extra launch arguments</b><small>Appended to the base Fortnite arguments</small></div><textarea id="args-input" rows="3" spellcheck="false" placeholder="-AUTH_TYPE=exchangecode -AUTH_LOGIN=… -AUTH_PASSWORD=…"></textarea></div>
+          <div class="row"><div><b>Capture args from running game</b><small>Start Fortnite once through Epic, then click</small></div><button class="btn btn-sm" id="btn-capture">CAPTURE</button></div>
           <div class="row"><div><b>Auto-spoof on launch</b></div><label class="sw"><input type="checkbox" id="opt-spoof"><i></i></label></div>
           <div class="row"><div><b>Console overlay</b></div><label class="sw"><input type="checkbox" id="opt-console" checked><i></i></label></div>
           <div class="row"><div><b>Close to tray</b></div><label class="sw"><input type="checkbox" id="opt-tray"><i></i></label></div>
